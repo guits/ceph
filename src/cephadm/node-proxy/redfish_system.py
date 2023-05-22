@@ -14,13 +14,19 @@ class RedfishSystem(System):
                  username,
                  password,
                  system_endpoint='/Systems/1'):
-        log.info(f"redfish system initialization, host: {host}, user: {username}")
-        self.client = RedFishClient(host, username, password)
-        self.client.login()
+        self.host = host
+        self.username = username
+        self.password = password
         self._system = {}
         self.run = False
         self.thread = None
         self.system_endpoint = system_endpoint
+        self.start_client()
+
+    def start_client(self):
+        log.info(f"redfish system initialization, host: {self.host}, user: {self.username}")
+        self.client = RedFishClient(self.host, self.username, self.password)
+        self.client.login()
 
     def get_system(self):
         return self._system
