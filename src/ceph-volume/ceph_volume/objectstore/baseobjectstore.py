@@ -189,3 +189,6 @@ class BaseObjectStore:
                         continue
                 else:
                     raise RuntimeError('Command failed with exit code %s: %s' % (returncode, ' '.join(command)))
+
+    def activate(self):
+        raise NotImplementedError()
