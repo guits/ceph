@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 from cephadm.agent import AgentEndpoint
 from cephadm.service_discovery import ServiceDiscovery
+from cephadm.node_proxy import NodeProxy
 from mgr_util import test_port_allocation, PortAlreadyInUse
 from orchestrator import OrchestratorError
 
@@ -29,6 +30,7 @@ class CephadmHttpServer(threading.Thread):
         self.mgr = mgr
         self.agent = AgentEndpoint(mgr)
         self.service_discovery = ServiceDiscovery(mgr)
+        self.node_proxy = NodeProxy(mgr)
         self.cherrypy_shutdown_event = threading.Event()
         self._service_discovery_port = self.mgr.service_discovery_port
         self.secure_monitoring_stack = self.mgr.secure_monitoring_stack
@@ -46,6 +48,7 @@ class CephadmHttpServer(threading.Thread):
         self.service_discovery.configure(self.mgr.service_discovery_port,
                                          self.mgr.get_mgr_ip(),
                                          self.secure_monitoring_stack)
+        self.node_proxy.configure()
 
     def config_update(self) -> None:
         self.service_discovery_port = self.mgr.service_discovery_port
