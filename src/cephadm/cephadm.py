@@ -31,6 +31,7 @@ from threading import Thread, Event
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen, Request
 from pathlib import Path
+import cephadmlib.node_proxy.server
 
 from cephadmlib.constants import (
     # default images
@@ -3757,6 +3758,9 @@ class CephadmAgent(DaemonForm):
 
     def run(self) -> None:
         self.pull_conf_settings()
+
+        t_node_proxy = Thread(target=cephadmlib.node_proxy.server.main)
+        t_node_proxy.start()
 
         try:
             for _ in range(1001):
