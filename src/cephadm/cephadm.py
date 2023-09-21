@@ -3926,7 +3926,7 @@ class CephadmAgent(DaemonForm):
 
             try:
                 self.query_endpoint(data=data,
-                                    endpoint='/data/',
+                                    endpoint='/data',
                                     ssl_ctx=ssl_ctx)
             except Exception as e:
                 logger.error(f'Failed to send metadata to mgr: {e}')
