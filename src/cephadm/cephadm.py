@@ -178,9 +178,7 @@ from cephadmlib import templating
 
 FuncT = TypeVar('FuncT', bound=Callable)
 
-
 logger = logging.getLogger()
-
 
 ##################################
 
