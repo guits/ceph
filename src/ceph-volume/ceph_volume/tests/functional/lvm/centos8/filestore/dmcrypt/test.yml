@@ -84,8 +84,15 @@
       environment:
         CEPH_VOLUME_DEBUG: 1
 
+#    - name: debug
+#      shell: sleep365d
+
     - name: zap /dev/vdc1
       command: "ceph-volume --cluster {{ cluster }} lvm zap /dev/vdc1 --destroy"
+      register: result
+      until: result is succeeded
+      delay: 5
+      retries: 3
       environment:
         CEPH_VOLUME_DEBUG: 1
 
