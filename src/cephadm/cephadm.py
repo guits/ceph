@@ -5272,6 +5272,10 @@ def command_bootstrap(ctx):
                 'For more information see:\n\n'
                 '\thttps://docs.ceph.com/en/latest/mgr/telemetry/\n')
     logger.info('Bootstrap complete.')
+
+    if getattr(ctx, 'deploy_cephadm_agent', None):
+        cli(['config', 'set', 'mgr', 'mgr/cephadm/use_agent', 'true'])
+
     return ctx.error_code
 
 ##################################
@@ -7629,6 +7633,10 @@ def _get_parser():
         '--log-to-file',
         action='store_true',
         help='configure cluster to log to traditional log files in /var/log/ceph/$fsid')
+    parser_bootstrap.add_argument(
+        '--deploy-cephadm-agent',
+        action='store_true',
+        help='deploy the cephadm-agent')
 
     parser_deploy = subparsers.add_parser(
         'deploy', help='deploy a daemon')
