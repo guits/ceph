@@ -359,8 +359,14 @@ class NodeProxy:
 
         :return: The full report data.
         :rtype: dict[str, Any]
+
+        :raises cherrypy.HTTPError 404: If the passed hostname is not found.
         """
-        return self.mgr.node_proxy.fullreport(**kw)
+        try:
+            results = self.mgr.node_proxy.fullreport(**kw)
+        except KeyError:
+            raise cherrypy.HTTPError(404, f"{kw.get('hostname')} not found.")
+        return results
 
     @cherrypy.expose
     @cherrypy.tools.allow(methods=['GET'])
@@ -377,8 +383,13 @@ class NodeProxy:
 
         :return: Critical information data.
         :rtype: dict[str, Any]
+
+        :raises cherrypy.HTTPError 404: If the passed hostname is not found.
         """
-        return self.mgr.node_proxy.criticals(**kw)
+        try:
+            results = self.mgr.node_proxy.criticals(**kw)
+        except KeyError:
+            raise cherrypy.HTTPError(404, f"{kw.get('hostname')} not found.")
 
     @cherrypy.expose
     @cherrypy.tools.allow(methods=['GET'])
@@ -395,8 +406,14 @@ class NodeProxy:
 
         :return: Summary information data.
         :rtype: dict[str, Any]
+
+        :raises cherrypy.HTTPError 404: If the passed hostname is not found.
         """
-        return self.mgr.node_proxy.summary(**kw)
+        try:
+            results = self.mgr.node_proxy.summary(**kw)
+        except KeyError:
+            raise cherrypy.HTTPError(404, f"{kw.get('hostname')} not found.")
+        return results
 
     @cherrypy.expose
     @cherrypy.tools.allow(methods=['GET'])
@@ -414,8 +431,14 @@ class NodeProxy:
 
         :return: Specific information data.
         :rtype: dict[str, Any]
+
+        :raises cherrypy.HTTPError 404: If the passed hostname is not found.
         """
-        return self.mgr.node_proxy.common('memory', **kw)
+        try:
+            results = self.mgr.node_proxy.common('memory', **kw)
+        except KeyError:
+            raise cherrypy.HTTPError(404, f"{kw.get('hostname')} not found.")
+        return results
 
     @cherrypy.expose
     @cherrypy.tools.allow(methods=['GET'])
@@ -433,8 +456,14 @@ class NodeProxy:
 
         :return: Specific information data.
         :rtype: dict[str, Any]
+
+        :raises cherrypy.HTTPError 404: If the passed hostname is not found.
         """
-        return self.mgr.node_proxy.common('network', **kw)
+        try:
+            results = self.mgr.node_proxy.common('network', **kw)
+        except KeyError:
+            raise cherrypy.HTTPError(404, f"{kw.get('hostname')} not found.")
+        return results
 
     @cherrypy.expose
     @cherrypy.tools.allow(methods=['GET'])
@@ -452,8 +481,14 @@ class NodeProxy:
 
         :return: Specific information data.
         :rtype: dict[str, Any]
+
+        :raises cherrypy.HTTPError 404: If the passed hostname is not found.
         """
-        return self.mgr.node_proxy.common('processors', **kw)
+        try:
+            results = self.mgr.node_proxy.common('processors', **kw)
+        except KeyError:
+            raise cherrypy.HTTPError(404, f"{kw.get('hostname')} not found.")
+        return results
 
     @cherrypy.expose
     @cherrypy.tools.allow(methods=['GET'])
@@ -471,8 +506,14 @@ class NodeProxy:
 
         :return: Specific information data.
         :rtype: dict[str, Any]
+
+        :raises cherrypy.HTTPError 404: If the passed hostname is not found.
         """
-        return self.mgr.node_proxy.common('storage', **kw)
+        try:
+            results = self.mgr.node_proxy.common('storage', **kw)
+        except KeyError:
+            raise cherrypy.HTTPError(404, f"{kw.get('hostname')} not found.")
+        return results
 
     @cherrypy.expose
     @cherrypy.tools.allow(methods=['GET'])
@@ -490,8 +531,14 @@ class NodeProxy:
 
         :return: Specific information data.
         :rtype: dict[str, Any]
+
+        :raises cherrypy.HTTPError 404: If the passed hostname is not found.
         """
-        return self.mgr.node_proxy.common('power', **kw)
+        try:
+            results = self.mgr.node_proxy.common('power', **kw)
+        except KeyError:
+            raise cherrypy.HTTPError(404, f"{kw.get('hostname')} not found.")
+        return results
 
     @cherrypy.expose
     @cherrypy.tools.allow(methods=['GET'])
@@ -509,8 +556,14 @@ class NodeProxy:
 
         :return: Specific information data.
         :rtype: dict[str, Any]
+
+        :raises cherrypy.HTTPError 404: If the passed hostname is not found.
         """
-        return self.mgr.node_proxy.common('fans', **kw)
+        try:
+            results = self.mgr.node_proxy.common('fans', **kw)
+        except KeyError:
+            raise cherrypy.HTTPError(404, f"{kw.get('hostname')} not found.")
+        return results
 
     @cherrypy.expose
     @cherrypy.tools.allow(methods=['GET'])
@@ -527,8 +580,13 @@ class NodeProxy:
 
         :return: Firmware information data.
         :rtype: dict[str, Any]
+
+        :raises cherrypy.HTTPError 404: If the passed hostname is not found.
         """
-        return self.mgr.node_proxy.firmwares(**kw)
+        try:
+            results = self.mgr.node_proxy.firmwares(**kw)
+        except KeyError:
+            raise cherrypy.HTTPError(404, f"{kw.get('hostname')} not found.")
 
 
 class HostData(Server):
