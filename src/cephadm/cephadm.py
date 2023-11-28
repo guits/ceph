@@ -3893,7 +3893,7 @@ class CephadmAgent(DaemonForm):
             }
         }
         status, result = self.query_endpoint(data=json.dumps(node_proxy_meta).encode('ascii'),
-                                             endpoint='/node-proxy/idrac',
+                                             endpoint='/node-proxy/oob',
                                              ssl_ctx=ssl_ctx)
         if status != 200:
             msg = f"Couldn't load iDrac details: {status}, {result}"
