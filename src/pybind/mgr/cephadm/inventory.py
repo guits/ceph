@@ -1411,11 +1411,11 @@ class NodeProxyCache:
         # type: (CephadmOrchestrator) -> None
         self.mgr = mgr
         self.data = {}
-        self.idrac = {}
+        self.oob = {}
 
     def load(self) -> None:
-        _idrac = self.mgr.get_store('node_proxy/idrac', "{}")
-        self.idrac = json.loads(_idrac)
+        _oob = self.mgr.get_store('node_proxy/oob', "{}")
+        self.oob = json.loads(_oob)
 
         for k, v in self.mgr.get_store_prefix(NODE_PROXY_CACHE_PREFIX).items():
             host = k.split('/')[-1:][0]
@@ -1424,7 +1424,7 @@ class NodeProxyCache:
                 # remove entry for host that no longer exists
                 self.mgr.set_store(f"{NODE_PROXY_CACHE_PREFIX}/{host}", None)
                 try:
-                    self.idrac.pop(host)
+                    self.oob.pop(host)
                 except KeyError:
                     pass
                 continue
