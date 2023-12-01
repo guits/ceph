@@ -111,9 +111,19 @@ class NodeProxy:
         self.redfish_session_location: str = ''
 
     def _cp_dispatch(self, vpath):
-        if len(vpath) == 2:
-            hostname = vpath.pop(0)
+        if len(vpath) > 1:  # /{hostname}/<endpoint>
+            hostname = vpath.pop(0)  # /<endpoint>
             cherrypy.request.params['hostname'] = hostname
+            # /{hostname}/led/{type}/{drive} eg: /{hostname}/led/chassis or /{hostname}/led/drive/{id}
+            if vpath[0] == 'led' and len(vpath) > 1:  # /led/{type}/{id}
+                _type = vpath[1]
+                cherrypy.request.params['type'] = _type
+                vpath.pop(1)  # /led/{id} or # /led
+                if _type == 'drive' and len(vpath) > 1:  # /led/{id}
+                    _id = vpath[1]
+                    vpath.pop(1)  # /led
+                    cherrypy.request.params['id'] = _id
+        # /<endpoint>
         return self
 
     @cherrypy.expose
@@ -332,6 +342,7 @@ class NodeProxy:
         url = f'https://{addr}:{port}{endpoint}'
         _headers = headers
         response_json = {}
+        response_headers = {}
         if not _headers.get('Content-Type'):
             # default to application/json if nothing provided
             _headers['Content-Type'] = 'application/json'
@@ -380,6 +391,8 @@ class NodeProxy:
         """
         method: str = cherrypy.request.method
         hostname: str = kw.get('hostname')
+        led_type: str = kw.get('type')
+        id_drive: str = kw.get('id')
         headers: Dict[str, str] = {}
         data: Optional[bytes] = None
 
@@ -387,6 +400,16 @@ class NodeProxy:
             msg = "listing enclosure LED status for all nodes is not implemented."
             self.mgr.log.debug(msg)
             raise cherrypy.HTTPError(501, msg)
+
+        if hostname not in self.mgr.node_proxy.data.keys():
+            # TODO(guits): update unit test for this
+            msg = f"'{hostname}' not found."
+            self.mgr.log.debug(msg)
+            raise cherrypy.HTTPError(400, msg)
+
+        # if led_type not in ['chassis', 'drive']:
+        #     # TODO(guits): update unit test for this
+        #     raise cherrypy.HTTPError(404, 'LED type must be either "chassis" or "drive"')
 
         addr = self.mgr.node_proxy.oob[hostname]['addr']
         port = self.mgr.node_proxy.oob[hostname]['port']
@@ -398,6 +421,16 @@ class NodeProxy:
             # allowing a specific keyring only ? (client.admin or client.agent.. ?)
             data = json.dumps(cherrypy.request.json)
 
+            if led_type == 'drive':
+                if id_drive not in self.mgr.node_proxy.data[hostname]['status']['storage'].keys():
+                    # TODO(guits): update unit test for this
+                    msg = f"'{id_drive}' not found."
+                    self.mgr.log.debug(msg)
+                    raise cherrypy.HTTPError(400, msg)
+                endpoint = self.mgr.node_proxy.data[hostname]['status']['storage'][id_drive].get('redfish_endpoint')
+            else:
+                endpoint = self.mgr.node_proxy.data[hostname]['chassis']['redfish_endpoint']
+
         with self.redfish_session(addr, username, password, port=port):
             try:
                 status, result, _ = self.query(data=data,
@@ -405,9 +438,9 @@ class NodeProxy:
                                                method=method,
                                                headers={"X-Auth-Token": self.redfish_token},
                                                port=port,
-                                               endpoint='/redfish/v1/Chassis/System.Embedded.1',
+                                               endpoint=endpoint,
                                                ssl_ctx=self.ssl_ctx)
-            except (URLError, HTTPError) as e:
+            except (URLError, HTTPError, RuntimeError) as e:
                 raise cherrypy.HTTPError(502, f"{e}")
             if method == 'GET':
                 result = {"LocationIndicatorActive": result['LocationIndicatorActive']}
