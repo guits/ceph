@@ -4,6 +4,7 @@ from ceph_node_proxy.baseclient import BaseClient
 from ceph_node_proxy.util import get_logger, http_req
 from typing import Dict, Any, Tuple, Optional
 from http.client import HTTPMessage
+from time import sleep
 
 
 class RedFishClient(BaseClient):
@@ -115,24 +116,37 @@ class RedFishClient(BaseClient):
               headers: Dict[str, str] = {},
               method: Optional[str] = None,
               endpoint: str = '',
-              timeout: int = 10) -> Tuple[HTTPMessage, str, int]:
+              timeout: int = 10,
+              retries: int = 0,
+              delay: int = 5) -> Tuple[HTTPMessage, str, int]:
+        r: int = 0
+        exc: Optional[Exception] = None
         _headers = headers.copy() if headers else {}
         if self.token:
             _headers['X-Auth-Token'] = self.token
         if not _headers.get('Content-Type') and method in ['POST', 'PUT', 'PATCH']:
             _headers['Content-Type'] = 'application/json'
-        try:
-            (response_headers,
-             response_str,
-             response_status) = http_req(hostname=self.host,
-                                         port=self.port,
-                                         endpoint=endpoint,
-                                         headers=_headers,
-                                         method=method,
-                                         data=data,
-                                         timeout=timeout)
-
-            return response_headers, response_str, response_status
-        except (HTTPError, URLError) as e:
-            self.log.debug(f'endpoint={endpoint} err={e}')
-            raise
+        nb_attempts: int = retries + 1 if retries == 0 else retries
+        self.log.debug(f'querying {endpoint}, will try {nb_attempts} times.')
+        while r < nb_attempts:
+            try:
+                (response_headers,
+                 response_str,
+                 response_status) = http_req(hostname=self.host,
+                                             port=self.port,
+                                             endpoint=endpoint,
+                                             headers=_headers,
+                                             method=method,
+                                             data=data,
+                                             timeout=timeout)
+                break
+            except (HTTPError, URLError) as e:
+                r += 1
+                exc = e
+                remaining_attempts: int = 0 if retries == 0 else retries - r
+                self.log.warning(f'{e.__class__} was caught while querying {endpoint}, remaining attempts: {remaining_attempts}')
+                sleep(delay)
+                continue
+        if exc:
+            raise exc
+        return response_headers, response_str, response_status
