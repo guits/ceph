@@ -208,7 +208,8 @@ class Batch(object):
         parser.add_argument(
             '--db-devices',
             nargs='*',
-            type=arg_validators.ValidBatchDevice(),
+            type=arg_validators.ValidBatchJournalDevice(),
+            #type=arg_validators.ValidBatchDevice(),
             default=[],
             help='Devices to provision OSDs db volumes',
         )

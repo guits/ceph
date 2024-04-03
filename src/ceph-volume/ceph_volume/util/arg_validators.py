@@ -120,6 +120,21 @@ class ValidBatchDevice(ValidDevice):
         return self._device
 
 
+class ValidBatchJournalDevice(ValidBatchDevice, ValidDataDevice):
+    def __call__(self, dev_path):
+        super().get_device(dev_path)
+        return self._format_device(self._is_valid_device())
+
+    def _is_valid_device(self):
+        for lv in self._device.lvs:
+            if lv.tags.get('ceph.type') in ['db', 'wal']:
+                return self._device
+        if self._device.used_by_ceph:
+            return self._device
+        super()._is_valid_device(raise_sys_exit=False)
+        return self._device
+
+
 class ValidBatchDataDevice(ValidBatchDevice, ValidDataDevice):
     def __call__(self, dev_path):
         super().get_device(dev_path)
@@ -131,7 +146,7 @@ class ValidBatchDataDevice(ValidBatchDevice, ValidDataDevice):
         # This way the idempotency isn't broken (especially when using --osds-per-device)
         for lv in self._device.lvs:
             if lv.tags.get('ceph.type') in ['db', 'wal']:
-                return self._device
+                raise RuntimeError(f'{self._device} is already a db or wal device.')
         if self._device.used_by_ceph:
             return self._device
         super()._is_valid_device(raise_sys_exit=False)
