@@ -18,6 +18,7 @@ import tempfile
 import time
 import errno
 import ssl
+import yaml
 from typing import Dict, List, Tuple, Optional, Union, Any, Callable, Sequence, TypeVar, cast, Iterable
 
 import re
@@ -2572,34 +2573,28 @@ def _extract_host_info_from_applied_spec(f: Iterable[str]) -> List[Dict[str, str
     # if possible) for each potential host spec in the applied spec.
 
     specs: List[List[str]] = []
-    current_spec: List[str] = []
+    current_spec: str = ''
     for line in f:
         if re.search(r'^---\s+', line):
             if current_spec:
                 specs.append(current_spec)
-            current_spec = []
+            current_spec = ''
         else:
-            line = line.strip()
             if line:
-                current_spec.append(line)
+                current_spec += line
     if current_spec:
         specs.append(current_spec)
 
     host_specs: List[List[str]] = []
     for spec in specs:
-        for line in spec:
-            if 'service_type' in line:
-                try:
-                    _, type = line.split(':')
-                    type = type.strip()
-                    if type == 'host':
-                        host_specs.append(spec)
-                except ValueError as e:
-                    spec_str = '\n'.join(spec)
-                    logger.error(f'Failed to pull service_type from spec:\n{spec_str}. Got error: {e}')
-                break
-            spec_str = '\n'.join(spec)
-            logger.error(f'Failed to find service_type within spec:\n{spec_str}')
+        yaml_data = yaml.safe_load(spec)
+        if 'service_type' in yaml_data.keys():
+            if yaml_data['service_type'] == 'host':
+                host_specs.append(yaml_data)
+            break
+        else:
+            spec_str = yaml.safe_dump(yaml_data)
+            logger.error(f'Failed to pull service_type from spec:\n{spec_str}. Got error: {e}')
 
     host_dicts = []
     for s in host_specs:
@@ -2627,20 +2622,14 @@ def _extract_host_info_from_spec(host_spec: List[str]) -> Dict[str, str]:
     # if we fail to find the hostname, an empty dict is returned
 
     host_dict = {}  # type: Dict[str, str]
-    for line in host_spec:
-        for field in ['hostname', 'addr']:
-            if field in line:
-                try:
-                    _, field_value = line.split(':')
-                    field_value = field_value.strip()
-                    host_dict[field] = field_value
-                except ValueError as e:
-                    spec_str = '\n'.join(host_spec)
-                    logger.error(f'Error trying to pull {field} from host spec:\n{spec_str}. Got error: {e}')
+    for field in ['hostname', 'addr']:
+        try:
+            host_dict[field] = host_spec[field]
+        except ValueError as e:
+            logger.error(f'Error trying to pull {field} from host spec:\n{host_spec}. Got error: {e}')
 
     if 'hostname' not in host_dict:
-        spec_str = '\n'.join(host_spec)
-        logger.error(f'Could not find hostname in host spec:\n{spec_str}')
+        logger.error(f'Could not find hostname in host spec:\n{host_spec}')
         return {}
     return host_dict
 
