@@ -18,7 +18,6 @@ import tempfile
 import time
 import errno
 import ssl
-import yaml
 from typing import Dict, List, Tuple, Optional, Union, Any, Callable, Sequence, TypeVar, cast, Iterable
 
 import re
@@ -97,6 +96,7 @@ from cephadmlib.data_utils import (
     try_convert_datetime,
     read_config,
     with_units_to_int,
+    _extract_host_info_from_applied_spec,
 )
 from cephadmlib.file_utils import (
     get_file_timestamp,
@@ -2562,77 +2562,6 @@ def finish_bootstrap_config(
         f.write(config)
     logger.info('Wrote config to %s' % ctx.output_config)
     pass
-
-
-def _extract_host_info_from_applied_spec(f: Iterable[str]) -> List[Dict[str, str]]:
-    # overall goal of this function is to go through an applied spec and find
-    # the hostname (and addr is provided) for each host spec in the applied spec.
-    # Generally, we should be able to just pass the spec to the mgr module where
-    # proper yaml parsing can happen, but for host specs in particular we want to
-    # be able to distribute ssh keys, which requires finding the hostname (and addr
-    # if possible) for each potential host spec in the applied spec.
-
-    specs: List[List[str]] = []
-    current_spec: str = ''
-    for line in f:
-        if re.search(r'^---\s+', line):
-            if current_spec:
-                specs.append(current_spec)
-            current_spec = ''
-        else:
-            if line:
-                current_spec += line
-    if current_spec:
-        specs.append(current_spec)
-
-    host_specs: List[List[str]] = []
-    for spec in specs:
-        yaml_data = yaml.safe_load(spec)
-        if 'service_type' in yaml_data.keys():
-            if yaml_data['service_type'] == 'host':
-                host_specs.append(yaml_data)
-            break
-        else:
-            spec_str = yaml.safe_dump(yaml_data)
-            logger.error(f'Failed to pull service_type from spec:\n{spec_str}. Got error: {e}')
-
-    host_dicts = []
-    for s in host_specs:
-        host_dict = _extract_host_info_from_spec(s)
-        # if host_dict is empty here, we failed to pull the hostname
-        # for the host from the spec. This should have already been logged
-        # so at this point we just don't want to include it in our output
-        if host_dict:
-            host_dicts.append(host_dict)
-
-    return host_dicts
-
-
-def _extract_host_info_from_spec(host_spec: List[str]) -> Dict[str, str]:
-    # note:for our purposes here, we only really want the hostname
-    # and address of the host from each of these specs in order to
-    # be able to distribute ssh keys. We will later apply the spec
-    # through the mgr module where proper yaml parsing can be done
-    # The returned dicts from this function should only contain
-    # one or two entries, one (required) for hostname, one (optional) for addr
-    # {
-    #   hostname: <hostname>
-    #   addr: <ip-addr>
-    # }
-    # if we fail to find the hostname, an empty dict is returned
-
-    host_dict = {}  # type: Dict[str, str]
-    for field in ['hostname', 'addr']:
-        try:
-            host_dict[field] = host_spec[field]
-        except ValueError as e:
-            logger.error(f'Error trying to pull {field} from host spec:\n{host_spec}. Got error: {e}')
-
-    if 'hostname' not in host_dict:
-        logger.error(f'Could not find hostname in host spec:\n{host_spec}')
-        return {}
-    return host_dict
-
 
 def _distribute_ssh_keys(ctx: CephadmContext, host_info: Dict[str, str], bootstrap_hostname: str) -> int:
     # copy ssh key to hosts in host spec (used for apply spec)
