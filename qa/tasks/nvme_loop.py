@@ -69,7 +69,7 @@ def task(ctx, config):
                 p = remote.run(args=['sudo', 'nvme', 'list'], stdout=StringIO())
                 new_devs = []
                 for line in p.stdout.getvalue().splitlines():
-                    dev, _, vendor = line.split()[0:3]
+                    dev, _, _, vendor = line.split()[0:4]
                     if dev.startswith('/dev/') and vendor == 'Linux':
                         new_devs.append(dev)
                 log.info(f'new_devs {new_devs}')
