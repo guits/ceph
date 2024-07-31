@@ -551,6 +551,8 @@ class RemoveUtil(object):
         "Zaps all devices that are associated with an OSD"
         if osd.hostname is not None:
             cmd = ['--', 'lvm', 'zap', '--osd-id', str(osd.osd_id)]
+            if osd.replace_block:
+                cmd.append('--replace-block')
             if not osd.no_destroy:
                 cmd.append('--destroy')
             with self.mgr.async_timeout_handler(osd.hostname, f'cephadm ceph-volume {" ".join(cmd)}'):
@@ -618,6 +620,7 @@ class OSD:
                  started: bool = False,
                  stopped: bool = False,
                  replace: bool = False,
+                 replace_block: bool = False,
                  force: bool = False,
                  hostname: Optional[str] = None,
                  zap: bool = False,
@@ -649,6 +652,8 @@ class OSD:
 
         # If this is a replace or remove operation
         self.replace = replace
+        # If this is a block device replacement
+        self.replace_block = replace_block
         # If we wait for the osd to be drained
         self.force = force
         # The name of the node
@@ -676,7 +681,7 @@ class OSD:
         if self.stopped:
             logger.debug(f"Won't start draining {self}. OSD draining is stopped.")
             return False
-        if self.replace:
+        if any([self.replace, self.replace_block]):
             self.rm_util.set_osd_flag([self], 'out')
         else:
             self.rm_util.reweight_osd(self, 0.0)
@@ -686,7 +691,7 @@ class OSD:
         return True
 
     def stop_draining(self) -> bool:
-        if self.replace:
+        if any([self.replace, self.replace_block]):
             self.rm_util.set_osd_flag([self], 'in')
         else:
             if self.original_weight:
@@ -764,6 +769,7 @@ class OSD:
         out['draining'] = self.draining
         out['stopped'] = self.stopped
         out['replace'] = self.replace
+        out['replace_block'] = self.replace_block
         out['force'] = self.force
         out['zap'] = self.zap
         out['hostname'] = self.hostname  # type: ignore
@@ -812,13 +818,15 @@ class OSDRemovalQueue(object):
         # network calls, like mon commands.
         self.lock = Lock()
 
-    def process_removal_queue(self) -> None:
+    def process_removal_queue(self) -> bool:
         """
         Performs actions in the _serve() loop to remove an OSD
         when criteria is met.
 
         we can't hold self.lock, as we're calling _remove_daemon in the loop
         """
+
+        result: bool = False
 
         # make sure that we don't run on OSDs that are not in the cluster anymore.
         self.cleanup()
@@ -863,16 +871,19 @@ class OSDRemovalQueue(object):
             if self.mgr.cache.has_daemon(f'osd.{osd.osd_id}'):
                 CephadmServe(self.mgr)._remove_daemon(f'osd.{osd.osd_id}', osd.hostname)
                 logger.info(f"Successfully removed {osd} on {osd.hostname}")
+                result = True
             else:
                 logger.info(f"Daemon {osd} on {osd.hostname} was already removed")
 
-            if osd.replace:
+            if osd.replace or osd.replace_block:
                 # mark destroyed in osdmap
                 if not osd.destroy():
                     raise orchestrator.OrchestratorError(
                         f"Could not destroy {osd}")
                 logger.info(
                     f"Successfully destroyed old {osd} on {osd.hostname}; ready for replacement")
+                if osd.replace_block:
+                    osd.zap = True
             else:
                 # purge from osdmap
                 if not osd.purge():
@@ -884,7 +895,7 @@ class OSDRemovalQueue(object):
                 logger.info(f"Zapping devices for {osd} on {osd.hostname}")
                 osd.do_zap()
                 logger.info(f"Successfully zapped devices for {osd} on {osd.hostname}")
-
+            self.mgr.cache.invalidate_host_devices(osd.hostname)
             logger.debug(f"Removing {osd} from the queue.")
 
         # self could change while this is processing (osds get added from the CLI)
@@ -893,6 +904,7 @@ class OSDRemovalQueue(object):
         with self.lock:
             self.osds.intersection_update(new_queue)
             self._save_to_store()
+        return result
 
     def cleanup(self) -> None:
         # OSDs can always be cleaned up manually. This ensures that we run on existing OSDs

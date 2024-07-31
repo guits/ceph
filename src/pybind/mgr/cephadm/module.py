@@ -3830,6 +3830,7 @@ Then run the following:
     @handle_orch_error
     def remove_osds(self, osd_ids: List[str],
                     replace: bool = False,
+                    replace_block: bool = False,
                     force: bool = False,
                     zap: bool = False,
                     no_destroy: bool = False) -> str:
@@ -3852,6 +3853,7 @@ Then run the following:
             try:
                 self.to_remove_osds.enqueue(OSD(osd_id=int(daemon.daemon_id),
                                                 replace=replace,
+                                                replace_block=replace_block,
                                                 force=force,
                                                 zap=zap,
                                                 no_destroy=no_destroy,

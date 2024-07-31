@@ -81,7 +81,7 @@ class DriveSelection(object):
         non_ceph_devices = [d for d in devices if not d.ceph_device]
 
         if limit > 0 and (len(non_ceph_devices) + self.existing_daemons >= limit):
-            logger.debug("Refuse to add {} due to limit policy of <{}>".format(
+            logger.error("Refuse to add {} due to limit policy of <{}>".format(
                 disk_path, limit))
             return True
         return False
@@ -92,7 +92,7 @@ class DriveSelection(object):
         """ Check for mandatory identification fields
         """
         if disk.path:
-            logger.debug("Found matching disk: {}".format(disk.path))
+            logger.error("Found matching disk: {}".format(disk.path))
             return True
         else:
             raise Exception(
@@ -116,23 +116,27 @@ class DriveSelection(object):
         """
 
         if not device_filter:
-            logger.debug('device_filter is None')
+            logger.error('device_filter is None')
             return []
 
         if not self.spec.data_devices:
-            logger.debug('data_devices is None')
+            logger.error('data_devices is None')
             return []
 
         if device_filter.paths:
-            logger.debug('device filter is using explicit paths')
+            logger.error('device filter is using explicit paths')
             return device_filter.paths
 
         devices = list()  # type: List[Device]
         for disk in self.disks:
-            logger.debug("Processing disk {}".format(disk.path))
+            logger.error("Processing disk {}".format(disk.path))
+
+            if disk.being_replaced:
+                logger.error('Ignoring disk {} as it is being replaced.'.format(disk.path))
+                continue
 
             if not disk.available and not disk.ceph_device:
-                logger.debug(
+                logger.error(
                     ("Ignoring disk {}. "
                      "Disk is unavailable due to {}".format(disk.path, disk.rejected_reasons))
                 )
@@ -146,19 +150,19 @@ class DriveSelection(object):
                             other_osdspec_affinity = lv['osdspec_affinity']
                             break
                 if other_osdspec_affinity:
-                    logger.debug("{} is already used in spec {}, "
+                    logger.error("{} is already used in spec {}, "
                                  "skipping it.".format(disk.path, other_osdspec_affinity))
                     continue
 
             if not self._has_mandatory_idents(disk):
-                logger.debug(
+                logger.error(
                     "Ignoring disk {}. Missing mandatory idents".format(
                         disk.path))
                 continue
 
             # break on this condition.
             if self._limit_reached(device_filter, devices, disk.path):
-                logger.debug("Ignoring disk {}. Limit reached".format(
+                logger.error("Ignoring disk {}. Limit reached".format(
                     disk.path))
                 break
 
@@ -167,19 +171,19 @@ class DriveSelection(object):
 
             if self.spec.filter_logic == 'AND':
                 if not all(m.compare(disk) for m in FilterGenerator(device_filter)):
-                    logger.debug(
+                    logger.error(
                         "Ignoring disk {}. Not all filter did match the disk".format(
                             disk.path))
                     continue
 
             if self.spec.filter_logic == 'OR':
                 if not any(m.compare(disk) for m in FilterGenerator(device_filter)):
-                    logger.debug(
+                    logger.error(
                         "Ignoring disk {}. No filter matched the disk".format(
                             disk.path))
                     continue
 
-            logger.debug('Adding disk {}'.format(disk.path))
+            logger.error('Adding disk {}'.format(disk.path))
             devices.append(disk)
 
         # This disk is already taken and must not be re-assigned.
