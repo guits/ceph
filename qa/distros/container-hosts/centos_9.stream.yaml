@@ -9,4 +9,5 @@ overrides:
 tasks:
 - pexec:
     all:
-    - sudo dnf install nvmetcli nvme-cli -y
+      - sudo dnf remove -y nvme-cli
+      - sudo dnf install nvmetcli nvme-cli -y

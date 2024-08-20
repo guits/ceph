@@ -8,6 +8,7 @@ overrides:
 tasks:
 - pexec:
     all:
-    - sudo dnf install runc nvmetcli nvme-cli -y
-    - sudo sed -i 's/^#runtime = "crun"/runtime = "runc"/g' /usr/share/containers/containers.conf
-    - sudo sed -i 's/runtime = "crun"/#runtime = "crun"/g' /usr/share/containers/containers.conf
+      - sudo dnf remove -y nvme-cli
+      - sudo dnf install runc nvmetcli nvme-cli -y
+      - sudo sed -i 's/^#runtime = "crun"/runtime = "runc"/g' /usr/share/containers/containers.conf
+      - sudo sed -i 's/runtime = "crun"/#runtime = "crun"/g' /usr/share/containers/containers.conf
