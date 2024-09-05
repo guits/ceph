@@ -1130,6 +1130,9 @@ def ceph_osds(ctx, config):
                     '--', 'lvm', 'zap', dev
                 ]
             )
+            remote.run(
+                args=[
+                    'sudo', 'dd', 'if=/dev/zero', 'of={}'.format(dev), 'bs=1M', 'count=20000'])
             add_osd_args = ['ceph', 'orch', 'daemon', 'add', 'osd',
                             remote.shortname + ':' + short_dev]
             osd_method = config.get('osd_method')
