@@ -10,7 +10,7 @@ from ceph_volume.api import lvm as api
 from ceph_volume.util import system, encryption, disk, arg_validators, str_to_int, merge_dict
 from ceph_volume.util.device import Device
 from ceph_volume.systemd import systemctl
-from typing import Any, Dict, List
+from typing import Dict, List
 
 logger = logging.getLogger(__name__)
 mlogger = terminal.MultiLogger(__name__)
@@ -41,7 +41,7 @@ def zap_bluestore(path: str) -> None:
         '--yes-i-really-really-mean-it'
     ])
 
-def wipefs(path):
+def wipefs(path: str) -> None:
     """
     Removes the filesystem from an lv or partition.
 
@@ -78,7 +78,7 @@ def wipefs(path):
     raise RuntimeError("could not complete wipefs on device: %s" % path)
 
 
-def zap_data(path):
+def zap_data(path: str) -> None:
     """
     Clears all data from the given path. Path should be
     an absolute path to an lv or partition.
@@ -96,7 +96,8 @@ def zap_data(path):
     ])
 
 
-def find_associated_devices(osd_id=None, osd_fsid=None):
+def find_associated_devices(osd_id: str = '',
+                            osd_fsid: str = '') -> List[Device]:
     """
     From an ``osd_id`` and/or an ``osd_fsid``, filter out all the LVs in the
     system that match those tag values, further detect if any partitions are
@@ -117,7 +118,8 @@ def find_associated_devices(osd_id=None, osd_fsid=None):
     return [Device(path) for path in set(devices_to_zap) if path]
 
 
-def ensure_associated_lvs(lvs, lv_tags={}):
+def ensure_associated_lvs(lvs: List[api.Volume],
+                          lv_tags: Dict[str, str] = {}) -> List[str]:
     """
     Go through each LV and ensure if backing devices (journal, wal, block)
     are LVs or partitions, so that they can be accurately reported.
@@ -194,7 +196,7 @@ class Zap:
         Device examples: vg-name/lv-name, /dev/vg-name/lv-name
         Requirements: Must be a logical volume (LV)
         """
-        lv: api.Volume = device.lv_api
+        lv = device.lv_api
         self.unmount_lv(lv)
         self.parent_device: str = disk.get_parent_device_from_mapper(lv.lv_path)
         cluster_fsid: str = lv.tags.get('ceph.cluster_fsid')

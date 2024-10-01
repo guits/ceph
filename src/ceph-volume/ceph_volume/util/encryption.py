@@ -297,7 +297,7 @@ def write_lockbox_keyring(osd_id, osd_fsid, secret):
     )
 
 
-def status(device):
+def status(device: str) -> Dict[str, Any]:
     """
     Capture the metadata information of a possibly encrypted device, returning
     a dictionary with all the values found (if any).
@@ -326,7 +326,7 @@ def status(device):
     ]
     out, err, code = process.call(command, show_command=True, verbose_on_failure=False)
 
-    metadata = {}
+    metadata: Dict[str, Any] = {}
     if code != 0:
         logger.warning('failed to detect device mapper information')
         return metadata

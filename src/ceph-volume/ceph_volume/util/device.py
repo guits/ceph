@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-# type: ignore
 import logging
 import os
 from functools import total_ordering
@@ -8,7 +7,7 @@ from ceph_volume.api import lvm
 from ceph_volume.util import disk, system
 from ceph_volume.util.lsmdisk import LSMDisk
 from ceph_volume.util.constants import ceph_disk_guids
-from typing import List, Tuple
+from typing import Any, Dict, List, Tuple, Optional, Union
 
 
 logger = logging.getLogger(__name__)
@@ -18,7 +17,7 @@ report_template = """
 {dev:<25} {size:<12} {device_nodes:<15} {rot!s:<7} {available!s:<9} {model}"""
 
 
-def encryption_status(abspath):
+def encryption_status(abspath: str) -> Dict[str, Any]:
     """
     Helper function to run ``encryption.status()``. It is done here to avoid
     a circular import issue (encryption module imports from this module) and to
@@ -28,15 +27,15 @@ def encryption_status(abspath):
     return encryption.status(abspath)
 
 
-class Devices(object):
+class Devices:
     """
     A container for Device instances with reporting
     """
 
     def __init__(self,
-                 filter_for_batch=False,
-                 with_lsm=False,
-                 list_all=False):
+                 filter_for_batch: bool = False,
+                 with_lsm: bool = False,
+                 list_all: bool = False) -> None:
         lvs = lvm.get_lvs()
         lsblk_all = disk.lsblk_all()
         all_devices_vgs = lvm.get_all_devices_vgs()
@@ -58,7 +57,7 @@ class Devices(object):
                 continue
             self.devices.append(device)
 
-    def pretty_report(self):
+    def pretty_report(self) -> str:
         output = [
             report_template.format(
                 dev='Device Path',
@@ -73,14 +72,14 @@ class Devices(object):
             output.append(device.report())
         return ''.join(output)
 
-    def json_report(self):
+    def json_report(self) -> List[Dict[str, Any]]:
         output = []
         for device in sorted(self.devices):
             output.append(device.json_report())
         return output
 
 @total_ordering
-class Device(object):
+class Device:
 
     pretty_template = """
      {attr:<25} {value}"""
@@ -109,16 +108,21 @@ class Device(object):
 
     # define some class variables; mostly to enable the use of autospec in
     # unittests
-    lvs = []
+    lvs: List[lvm.Volume] = []
 
-    def __init__(self, path, with_lsm=False, lvs=None, lsblk_all=None, all_devices_vgs=None):
-        self.path = path
+    def __init__(self,
+                 path: str,
+                 with_lsm: bool = False,
+                 lvs: Optional[List[lvm.Volume]] = None,
+                 lsblk_all: Optional[List[Dict[str, str]]] = None,
+                 all_devices_vgs: Optional[List[lvm.VolumeGroup]] = None) -> None:
+        self.path: str = path
         # LVs can have a vg/lv path, while disks will have /dev/sda
-        self.symlink = None
+        self.symlink: Optional[str] = None
         # check if we are a symlink
         if os.path.islink(self.path):
             self.symlink = self.path
-            real_path = os.path.realpath(self.path)
+            real_path: str = os.path.realpath(self.path)
             # check if we are not a device mapper
             if "dm-" not in real_path and not self.is_lv:
                 self.path = real_path
@@ -126,17 +130,16 @@ class Device(object):
             sys_info.devices = disk.get_devices()
         self.sys_api = sys_info.devices.get(self.path, {})
         self.partitions = self._get_partitions()
-        self.lv_api = None
-        self.lvs = [] if not lvs else lvs
+        self.lvs: Optional[List[lvm.Volume]] = lvs if lvs is not None else []
         self.lsblk_all = lsblk_all
         self.all_devices_vgs = all_devices_vgs
-        self.vgs = []
-        self.vg_name = None
-        self.lv_name = None
-        self.disk_api = {}
-        self.blkid_api = None
+        self.vgs: List[lvm.VolumeGroup] = []
+        self.vg_name: str = ''
+        self.lv_name: str = ''
+        self.disk_api: Dict[str, Any] = {}
+        self.blkid_api: Optional[Dict[str, Any]] = None
         self._exists = None
-        self._is_lvm_member = None
+        self._is_lvm_member: Optional[bool] = None
         self.ceph_device = False
         self.being_replaced: bool = self.is_being_replaced
         self._parse()
@@ -152,7 +155,7 @@ class Device(object):
 
         self.device_id = self._get_device_id()
 
-    def fetch_lsm(self, with_lsm):
+    def fetch_lsm(self, with_lsm: bool) -> Dict[str, Any]:
         '''
         Attempt to fetch libstoragemgmt (LSM) metadata, and return to the caller
         as a dict. An empty dict is passed back to the caller if the target path
@@ -167,7 +170,7 @@ class Device(object):
 
         return  lsm_disk.json_report()
 
-    def __lt__(self, other):
+    def __lt__(self, other: 'Device') -> bool:
         '''
         Implementing this method and __eq__ allows the @total_ordering
         decorator to turn the Device class into a totally ordered type.
@@ -179,17 +182,19 @@ class Device(object):
             return self.path < other.path
         return self.available and not other.available
 
-    def __eq__(self, other):
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Device):
+            return NotImplemented
         return self.path == other.path
 
-    def __hash__(self):
+    def __hash__(self) -> int:
         return hash(self.path)
 
-    def load_blkid_api(self):
+    def load_blkid_api(self) -> None:
         if self.blkid_api is None:
-            self.blkid_api = disk.blkid(self.path)
+            self.blkid_api = disk.blkid(self.path) or {}
 
-    def _parse(self):
+    def _parse(self) -> None:
         lv = None
         if not self.sys_api:
             # if no device was found check if we are a partition
@@ -231,7 +236,7 @@ class Device(object):
             lv = lvm.get_single_lv(filters=filters)
 
         if lv:
-            self.lv_api = lv
+            self.lv_api: lvm.Volume = lv
             self.lvs = [lv]
             self.path = lv.lv_path
             self.vg_name = lv.vg_name
@@ -256,7 +261,7 @@ class Device(object):
 
         self.ceph_disk = CephDiskDevice(self)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         prefix = 'Unknown'
         if self.is_lv:
             prefix = 'LV'
@@ -266,13 +271,13 @@ class Device(object):
             prefix = 'Raw Device'
         return '<%s: %s>' % (prefix, self.path)
 
-    def pretty_report(self):
-        def format_value(v):
+    def pretty_report(self) -> str:
+        def format_value(v: Union[str, List[str]]) -> str:
             if isinstance(v, list):
                 return ', '.join(v)
             else:
                 return v
-        def format_key(k):
+        def format_key(k: str) -> str:
             return k.strip('_').replace('_', ' ')
         output = ['\n====== Device report {} ======\n'.format(self.path)]
         output.extend(
@@ -294,7 +299,7 @@ class Device(object):
                     value=format_value(v)) for k, v in lv.report().items()])
         return ''.join(output)
 
-    def report(self):
+    def report(self) -> str:
         return report_template.format(
             dev=self.path,
             size=self.size_human,
@@ -304,13 +309,13 @@ class Device(object):
             device_nodes=self.device_nodes
         )
 
-    def json_report(self):
+    def json_report(self) -> Dict[str, Any]:
         output = {k.strip('_'): v for k, v in vars(self).items() if k in
                   self.report_fields}
         output['lvs'] = [lv.report() for lv in self.lvs]
         return output
 
-    def _get_device_id(self):
+    def _get_device_id(self) -> str:
         """
         Please keep this implementation in sync with get_device_id() in
         src/common/blkdev.cc
@@ -340,7 +345,7 @@ class Device(object):
             dev_id = dev_id.replace('__', '_')
         return dev_id
 
-    def _set_lvm_membership(self):
+    def _set_lvm_membership(self) -> None:
         if self._is_lvm_member is None:
             # this is contentious, if a PV is recognized by LVM but has no
             # VGs, should we consider it as part of LVM? We choose not to
@@ -357,18 +362,19 @@ class Device(object):
             if not self.all_devices_vgs:
                 self.all_devices_vgs = lvm.get_all_devices_vgs()
             for path in device_to_check:
-                for dev_vg in self.all_devices_vgs:
-                    if dev_vg.pv_name == path:
-                        vgs = [dev_vg]
+                if self.all_devices_vgs is not None:
+                    for dev_vg in self.all_devices_vgs:
+                        if dev_vg.pv_name == path:
+                            vgs = [dev_vg]
                 if vgs:
                     self.vgs.extend(vgs)
-                    self.vg_name = vgs[0]
+                    self.vg_name = vgs[0].name
                     self._is_lvm_member = True
                     self.lvs.extend(lvm.get_device_lvs(path))
                 if self.lvs:
                     self.ceph_device = any([True if lv.tags.get('ceph.osd_id') else False for lv in self.lvs])
 
-    def _get_partitions(self):
+    def _get_partitions(self) -> List[str]:
         """
         For block devices LVM can reside on the raw block device or on a
         partition. Return a list of paths to be checked for a pv.
@@ -380,21 +386,21 @@ class Device(object):
         return partitions
 
     @property
-    def exists(self):
+    def exists(self) -> bool:
         return os.path.exists(self.path)
 
     @property
-    def has_fs(self):
+    def has_fs(self) -> bool:
         self.load_blkid_api()
-        return 'TYPE' in self.blkid_api
+        return 'TYPE' in self.blkid_api if self.blkid_api else False
 
     @property
-    def has_gpt_headers(self):
+    def has_gpt_headers(self) -> bool:
         self.load_blkid_api()
-        return self.blkid_api.get("PTTYPE") == "gpt"
+        return self.blkid_api.get("PTTYPE") == "gpt" if self.blkid_api else False
 
     @property
-    def rotational(self):
+    def rotational(self) -> bool:
         rotational = self.sys_api.get('rotational')
         if rotational is None:
             # fall back to lsblk if not found in sys_api
@@ -403,25 +409,24 @@ class Device(object):
         return rotational == '1'
 
     @property
-    def model(self):
+    def model(self) -> str:
         return self.sys_api['model']
 
     @property
-    def size_human(self):
+    def size_human(self) -> str:
         return self.sys_api['human_readable_size']
 
     @property
-    def size(self):
+    def size(self) -> float:
         return self.sys_api['size']
 
     @property
-    def parent_device(self):
-        if 'PKNAME' in self.disk_api:
-            return '/dev/%s' % self.disk_api['PKNAME']
-        return None
+    def parent_device(self) -> str:
+        pkname = self.disk_api.get("PKNAME", "")
+        return f'/dev/{pkname}' if pkname else self.path
 
     @property
-    def lvm_size(self):
+    def lvm_size(self) -> disk.Size:
         """
         If this device was made into a PV it would lose 1GB in total size
         due to the 1GB physical extent size we set when creating volume groups
@@ -431,51 +436,49 @@ class Device(object):
         return lvm_size
 
     @property
-    def is_lvm_member(self):
+    def is_lvm_member(self) -> Optional[bool]:
         if self._is_lvm_member is None:
             self._set_lvm_membership()
         return self._is_lvm_member
 
     @property
-    def is_ceph_disk_member(self):
-        def is_member(device):
-            return 'ceph' in device.get('PARTLABEL', '') or \
-                device.get('PARTTYPE', '') in ceph_disk_guids.keys()
-        # If we come from Devices(), self.lsblk_all is set already.
-        # Otherwise, we have to grab the data.
+    def is_ceph_disk_member(self) -> bool:
+        def is_member(device: dict) -> bool:
+            return 'ceph' in device.get('PARTLABEL', '') or device.get('PARTTYPE') in ceph_disk_guids
+
         details = self.lsblk_all or disk.lsblk_all()
-        _is_member = False
-        if self.sys_api.get("partitions"):
-            for part in self.sys_api.get("partitions").keys():
-                for dev in details:
-                    if part.startswith(dev['NAME']):
-                        if is_member(dev):
-                            _is_member = True
-                return _is_member
-        else:
-            return is_member(self.disk_api)
-        raise RuntimeError(f"Couln't check if device {self.path} is a ceph-disk member.")
+        partitions = self.sys_api.get("partitions")
+
+        if partitions:
+            return any(is_member(dev) for part in partitions for dev in details if part.startswith(dev['NAME']))
+        
+        if is_member(self.disk_api):
+            return True
+
+        raise RuntimeError(f"Couldn't check if device {self.path} is a ceph-disk member.")
 
     @property
-    def has_bluestore_label(self):
+    def has_bluestore_label(self) -> bool:
         return disk.has_bluestore_label(self.path)
 
     @property
-    def is_mapper(self):
+    def is_mapper(self) -> bool:
         return self.path.startswith(('/dev/mapper', '/dev/dm-'))
 
     @property
-    def device_type(self):
+    def device_type(self) -> str:
         self.load_blkid_api()
+        result: str = ''
         if 'type' in self.sys_api:
-            return self.sys_api.get('type')
+            result = self.sys_api.get('type', '')
         elif self.disk_api:
-            return self.disk_api.get('TYPE')
+            result = self.disk_api.get('TYPE', '')
         elif self.blkid_api:
-            return self.blkid_api.get('TYPE')
+            result = self.blkid_api.get('TYPE', '')
+        return result
 
     @property
-    def is_mpath(self):
+    def is_mpath(self) -> bool:
         return self.device_type == 'mpath'
 
     @property
@@ -484,7 +487,7 @@ class Device(object):
         return path in disk.get_lvm_mappers()
 
     @property
-    def is_partition(self):
+    def is_partition(self) -> bool:
         self.load_blkid_api()
         if self.disk_api:
             return self.disk_api.get('TYPE') == 'part'
@@ -493,7 +496,7 @@ class Device(object):
         return False
 
     @property
-    def is_device(self):
+    def is_device(self) -> bool:
         self.load_blkid_api()
         api = None
         if self.disk_api:
@@ -508,25 +511,27 @@ class Device(object):
         return False
 
     @property
-    def is_acceptable_device(self):
+    def is_acceptable_device(self) -> bool:
         return self.is_device or self.is_partition or self.is_lv
 
     @property
-    def is_encrypted(self):
+    def is_encrypted(self) -> bool:
         """
         Only correct for LVs, device mappers, and partitions. Will report a ``None``
         for raw devices.
         """
         self.load_blkid_api()
-        crypt_reports = [self.blkid_api.get('TYPE', ''), self.disk_api.get('FSTYPE', '')]
+
+        blkid_type = self.blkid_api.get('TYPE', '') if self.blkid_api else ''
+        disk_fstype = self.disk_api.get('FSTYPE', '') if self.disk_api else ''
+        crypt_reports = [blkid_type, disk_fstype]
+
         if self.is_lv:
             # if disk APIs are reporting this is encrypted use that:
-            if 'crypto_LUKS' in crypt_reports:
+            if 'crypto_LUKS' in crypt_reports or self.lv_api.encrypted:
                 return True
-            # if ceph-volume created this, then a tag would let us know
-            elif self.lv_api.encrypted:
-                return True
-            return False
+            else:
+                return False
         elif self.is_partition:
             return 'crypto_LUKS' in crypt_reports
         elif self.is_mapper:
@@ -538,17 +543,17 @@ class Device(object):
             else:
                 return False
         else:
-            return None
+            raise RuntimeError(f"Can't check if device is encrypted")
 
     @property
-    def used_by_ceph(self):
+    def used_by_ceph(self) -> bool:
         # only filter out data devices as journals could potentially be reused
         osd_ids = [lv.tags.get("ceph.osd_id") is not None for lv in self.lvs
                    if lv.tags.get("ceph.type") in ["data", "block"]]
         return any(osd_ids)
 
     @property
-    def journal_used_by_ceph(self):
+    def journal_used_by_ceph(self) -> bool:
         # similar to used_by_ceph() above. This is for 'journal' devices (db/wal/..)
         # needed by get_lvm_fast_allocs() in devices/lvm/batch.py
         # see https://tracker.ceph.com/issues/59640
@@ -557,14 +562,14 @@ class Device(object):
         return any(osd_ids)
 
     @property
-    def vg_free_percent(self):
+    def vg_free_percent(self) -> List[int]:
         if self.vgs:
             return [vg.free_percent for vg in self.vgs]
         else:
             return [1]
 
     @property
-    def vg_size(self):
+    def vg_size(self) -> List[int]:
         if self.vgs:
             return [vg.size for vg in self.vgs]
         else:
@@ -572,7 +577,7 @@ class Device(object):
             return self.vg_free
 
     @property
-    def vg_free(self):
+    def vg_free(self) -> List[int]:
         '''
         Returns the free space in all VGs on this device. If no VGs are
         present, returns the disk size.
@@ -674,7 +679,7 @@ class Device(object):
         return len(rejected) == 0, rejected
 
     @property
-    def available_lvm_batch(self):
+    def available_lvm_batch(self) -> bool:
         if self.sys_api.get("partitions"):
             return False
         if system.device_is_mounted(self.path):
@@ -688,12 +693,12 @@ class CephDiskDevice(object):
     (journal, data, etc..). Requires a ``Device`` object as input.
     """
 
-    def __init__(self, device):
+    def __init__(self, device: Device) -> None:
         self.device = device
-        self._is_ceph_disk_member = None
+        self._is_ceph_disk_member: Optional[bool] = None
 
     @property
-    def partlabel(self):
+    def partlabel(self) -> str:
         """
         In containers, the 'PARTLABEL' attribute might not be detected
         correctly via ``lsblk``, so we poke at the value with ``lsblk`` first,
@@ -702,31 +707,29 @@ class CephDiskDevice(object):
         lsblk_partlabel = self.device.disk_api.get('PARTLABEL')
         if lsblk_partlabel:
             return lsblk_partlabel
-        return self.device.blkid_api.get('PARTLABEL', '')
+        return self.device.blkid_api.get('PARTLABEL', '') if self.device.blkid_api else ''
 
     @property
-    def parttype(self):
+    def parttype(self) -> str:
         """
         Seems like older version do not detect PARTTYPE correctly (assuming the
         info in util/disk.py#lsblk is still valid).
         SImply resolve to using blkid since lsblk will throw an error if asked
         for an unknown columns
         """
-        return self.device.blkid_api.get('PARTTYPE', '')
+        return self.device.blkid_api.get('PARTTYPE', '') if self.device.blkid_api else ''
 
     @property
-    def is_member(self):
-        if self._is_ceph_disk_member is None:
-            if 'ceph' in self.partlabel:
-                self._is_ceph_disk_member = True
-                return True
-            elif self.parttype in ceph_disk_guids.keys():
-                return True
-            return False
+    def is_member(self) -> bool:
+        if self._is_ceph_disk_member is not None:
+            return self._is_ceph_disk_member
+        
+        self._is_ceph_disk_member = 'ceph' in self.partlabel or self.parttype in ceph_disk_guids
         return self._is_ceph_disk_member
 
     @property
-    def type(self):
+    def type(self) -> str:
+        result: str = ''
         types = [
             'data', 'wal', 'db', 'lockbox', 'journal',
             # ceph-disk uses 'ceph block' when placing data in bluestore, but
@@ -737,4 +740,10 @@ class CephDiskDevice(object):
             if t in self.partlabel:
                 return t
         label = ceph_disk_guids.get(self.parttype, {})
-        return label.get('type', 'unknown').split('.')[-1]
+        type_value = label.get('type', 'unknown')
+        if isinstance(type_value, str):
+            result = type_value.split('.')[-1]
+        else:
+            result = 'unknown'
+
+        return result
