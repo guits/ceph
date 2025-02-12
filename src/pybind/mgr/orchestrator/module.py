@@ -1422,6 +1422,14 @@ Usage:
         raise_if_exception(completion)
         return HandleCommandResult(stdout=completion.result_str())
 
+    @_cli_write_command('orch osd rebuild')
+    def _osd_rebuild(self,
+                     osd_ids: List[str]) -> HandleCommandResult:
+        self.remove_osds(osd_ids, zap=True, replace=True, no_destroy=False)
+        completion = self.osd_rebuild(osd_ids)
+        raise_if_exception(completion)
+        return HandleCommandResult(stdout=completion.result_str())
+
     @_cli_write_command('orch osd rm')
     def _osd_rm_start(self,
                       osd_id: List[str],
