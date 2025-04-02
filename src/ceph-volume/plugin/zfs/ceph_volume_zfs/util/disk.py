@@ -3,6 +3,7 @@ import re
 from ceph_volume.util.disk import human_readable_size
 from ceph_volume import process
 from ceph_volume import sys_info
+from typing import Any, Dict
 
 report_template = """
 /dev/{geomname:<16} {mediasize:<16} {rotational!s:<7} {descr}"""
@@ -46,7 +47,7 @@ def geom_disk_parser(block):
         parsed[column.lower()] = value
     return parsed
 
-def get_disk(diskname):
+async def get_disk(diskname: str) -> str:
     """
     Captures all available info from geom
     along with interesting metadata like sectors, size, vendor,
@@ -56,7 +57,7 @@ def get_disk(diskname):
     """
 
     command = ['/sbin/geom', 'disk', 'list', re.sub('/dev/', '', diskname)]
-    out, err, rc = process.call(command)
+    out, _, _ = await process.call(command)
     geom_block = ""
     for line in out:
         line.strip()
@@ -64,12 +65,12 @@ def get_disk(diskname):
     disk = geom_disk_parser(geom_block)
     return disk
 
-def get_disks():
+async def get_disks() -> Dict[str, Any]:
     command = ['/sbin/geom', 'disk', 'status', '-s']
-    out, err, rc = process.call(command)
+    out, _, _ = await process.call(command)
     disks = {}
     for path in out:
-        dsk, rest1, rest2 = path.split()
+        dsk, _, _ = path.split()
         disk = get_disk(dsk)
         disks['/dev/'+dsk] = disk
     return disks

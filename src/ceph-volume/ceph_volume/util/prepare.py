@@ -9,14 +9,14 @@ import logging
 import json
 from ceph_volume import process, conf, terminal
 from ceph_volume.util import system, constants, str_to_int, disk
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 mlogger = terminal.MultiLogger(__name__)
 
 
-def create_key():
-    stdout, stderr, returncode = process.call(
+async def create_key() -> str:
+    stdout, _, returncode = await process.call(
         ['ceph-authtool', '--gen-print-key'],
         show_command=True,
         logfile_verbose=False)
@@ -25,7 +25,7 @@ def create_key():
     return ' '.join(stdout).strip()
 
 
-def write_keyring(osd_id, secret, keyring_name='keyring', name=None):
+async def write_keyring(osd_id: str, secret: str, keyring_name: str = 'keyring', name: Optional[str] = None) -> None:
     """
     Create a keyring file with the ``ceph-authtool`` utility. Constructs the
     path over well-known conventions for the OSD, and allows any other custom
@@ -41,7 +41,7 @@ def write_keyring(osd_id, secret, keyring_name='keyring', name=None):
     osd_keyring = '/var/lib/ceph/osd/%s-%s/%s' % (conf.cluster, osd_id, keyring_name)
     name = name or 'osd.%s' % str(osd_id)
     mlogger.info(f'Creating keyring file for {name}')
-    process.call(
+    await process.call(
         [
             'ceph-authtool', osd_keyring,
             '--create-keyring',
@@ -49,7 +49,7 @@ def write_keyring(osd_id, secret, keyring_name='keyring', name=None):
             '--add-key', secret
         ],
         logfile_verbose=False)
-    system.chown(osd_keyring)
+    await system.chown(osd_keyring)
 
 
 def get_block_db_size(lv_format=True):
@@ -122,7 +122,7 @@ def get_block_wal_size(lv_format=True):
     return wal_size
 
 
-def create_id(fsid: str, json_secrets: str, osd_id: Optional[str]=None) -> str:
+async def create_id(fsid: str, json_secrets: str, osd_id: Optional[str]=None) -> str:
     """
     :param fsid: The osd fsid to create, always required
     :param json_secrets: a json-ready object with whatever secrets are wanted
@@ -144,7 +144,7 @@ def create_id(fsid: str, json_secrets: str, osd_id: Optional[str]=None) -> str:
             cmd.append(osd_id)
         else:
             raise RuntimeError("The osd ID {} is already in use or does not exist.".format(osd_id))
-    stdout, stderr, returncode = process.call(
+    stdout, _, returncode = await process.call(
         cmd,
         stdin=json_secrets,
         show_command=True
@@ -154,7 +154,7 @@ def create_id(fsid: str, json_secrets: str, osd_id: Optional[str]=None) -> str:
     return ' '.join(stdout).strip()
 
 
-def osd_id_available(osd_id):
+async def osd_id_available(osd_id: str) -> bool:
     """
     Checks to see if an osd ID exists and if it's available for
     reuse. Returns True if it is, False if it isn't.
@@ -165,7 +165,7 @@ def osd_id_available(osd_id):
         return False
 
     bootstrap_keyring = '/var/lib/ceph/bootstrap-osd/%s.keyring' % conf.cluster
-    stdout, stderr, returncode = process.call(
+    stdout, _, returncode = await process.call(
         [
             'ceph',
             '--cluster', conf.cluster,
@@ -188,8 +188,8 @@ def osd_id_available(osd_id):
     return False
 
 
-def mount_tmpfs(path):
-    process.run([
+async def mount_tmpfs(path: str) -> None:
+    await process.run([
         'mount',
         '-t',
         'tmpfs', 'tmpfs',
@@ -197,17 +197,17 @@ def mount_tmpfs(path):
     ])
 
     # Restore SELinux context
-    system.set_context(path)
+    await system.set_context(path)
 
 
-def create_osd_path(osd_id, tmpfs=False):
+async def create_osd_path(osd_id: str, tmpfs: bool = False) -> None:
     path = '/var/lib/ceph/osd/%s-%s' % (conf.cluster, osd_id)
     system.mkdir_p('/var/lib/ceph/osd/%s-%s' % (conf.cluster, osd_id))
     if tmpfs:
-        mount_tmpfs(path)
+        await mount_tmpfs(path)
 
 
-def format_device(device):
+async def format_device(device: str) -> None:
     # only supports xfs
     command = ['mkfs', '-t', 'xfs']
 
@@ -226,7 +226,7 @@ def format_device(device):
 
     command.extend(flags)
     command.append(device)
-    process.run(command)
+    await process.run(command)
 
 
 def _normalize_mount_flags(flags, extras=None):
@@ -278,7 +278,7 @@ def _normalize_mount_flags(flags, extras=None):
     return ','.join(set(flags.split(',')))
 
 
-def mount_osd(device, osd_id, **kw):
+async def mount_osd(device: str, osd_id: str, **kw: Any) -> None:
     extras = []
     is_vdo = kw.get('is_vdo', '0')
     if is_vdo == '1':
@@ -296,13 +296,13 @@ def mount_osd(device, osd_id, **kw):
     )
     command.append(device)
     command.append(destination)
-    process.run(command)
+    await process.run(command)
 
     # Restore SELinux context
-    system.set_context(destination)
+    await system.set_context(destination)
 
 
-def _link_device(device, device_type, osd_id):
+async def _link_device(device: str, device_type: str, osd_id: str) -> None:
     """
     Allow linking any device type in an OSD directory. ``device`` must the be
     source, with an absolute path and ``device_type`` will be the destination
@@ -314,16 +314,16 @@ def _link_device(device, device_type, osd_id):
         device_type
     )
     command = ['ln', '-s', device, device_path]
-    system.chown(device)
+    await system.chown(device)
 
-    process.run(command)
+    await process.run(command)
 
-def _validate_bluestore_device(device, excepted_device_type, osd_uuid):
+async def _validate_bluestore_device(device: str, excepted_device_type: str, osd_uuid: str) -> None:
     """
     Validate whether the given device is truly what it is supposed to be
     """
 
-    out, err, ret = process.call(['ceph-bluestore-tool', 'show-label', '--dev', device])
+    out, err, ret = await process.call(['ceph-bluestore-tool', 'show-label', '--dev', device])
     if err:
         terminal.error('ceph-bluestore-tool failed to run. %s'% err)
         raise SystemExit(1)
@@ -358,7 +358,7 @@ def link_db(db_device, osd_id, osd_uuid=None):
     _link_device(db_device, 'block.db', osd_id)
 
 
-def get_monmap(osd_id):
+async def get_monmap(osd_id: str) -> None:
     """
     Before creating the OSD files, a monmap needs to be retrieved so that it
     can be used to tell the monitor(s) about the new OSD. A call will look like::
@@ -371,10 +371,12 @@ def get_monmap(osd_id):
     bootstrap_keyring = '/var/lib/ceph/bootstrap-osd/%s.keyring' % conf.cluster
     monmap_destination = os.path.join(path, 'activate.monmap')
 
-    process.run([
-        'ceph',
-        '--cluster', conf.cluster,
-        '--name', 'client.bootstrap-osd',
-        '--keyring', bootstrap_keyring,
-        'mon', 'getmap', '-o', monmap_destination
-    ])
+    await process.run(
+        [
+            'ceph',
+            '--cluster', conf.cluster,
+            '--name', 'client.bootstrap-osd',
+            '--keyring', bootstrap_keyring,
+            'mon', 'getmap', '-o', monmap_destination
+        ]
+    )

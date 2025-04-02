@@ -1,7 +1,6 @@
 import logging
 import json
 import os
-from .bluestore import BlueStore
 from ceph_volume import terminal, decorators, conf, process
 from ceph_volume.util import system, disk
 from ceph_volume.util import prepare as prepare_utils
@@ -9,6 +8,7 @@ from ceph_volume.util import encryption as encryption_utils
 from ceph_volume.util.device import Device
 from ceph_volume.devices.lvm.common import rollback_osd
 from ceph_volume.devices.raw.list import direct_report
+from .bluestore import BlueStore
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -28,7 +28,7 @@ class RawBlueStore(BlueStore):
         self.db_device_path = getattr(self.args, 'block_db', '')
         self.wal_device_path = getattr(self.args, 'block_wal', '')
 
-    def prepare_dmcrypt(self) -> None:
+    async def prepare_dmcrypt(self) -> None:
         """
         Helper for devices that are encrypted. The operations needed for
         block, db, wal, devices are all the same
@@ -39,18 +39,19 @@ class RawBlueStore(BlueStore):
                                     (self.wal_device_path, 'wal')]:
 
             if device:
-                kname = disk.lsblk(device)['KNAME']
+                lsblk_result = await disk.lsblk(device)
+                kname = lsblk_result['KNAME']
                 mapping = 'ceph-{}-{}-{}-dmcrypt'.format(self.osd_fsid,
                                                          kname,
                                                          device_type)
                 # format data device
-                encryption_utils.luks_format(
+                await encryption_utils.luks_format(
                     self.dmcrypt_key,
                     device
                 )
                 if self.with_tpm:
-                    self.enroll_tpm2(device)
-                encryption_utils.luks_open(
+                    await self.enroll_tpm2(device)
+                await encryption_utils.luks_open(
                     self.dmcrypt_key,
                     device,
                     mapping,
@@ -59,8 +60,8 @@ class RawBlueStore(BlueStore):
                 self.__dict__[f'{device_type}_device_path'] = \
                     '/dev/mapper/{}'.format(mapping)  # TODO(guits): need to preserve path or find a way to get the parent device from the mapper ?
 
-    def safe_prepare(self,
-                     args: Optional["argparse.Namespace"] = None) -> None:
+    async def safe_prepare(self,
+                           args: Optional["argparse.Namespace"] = None) -> None:
         """
         An intermediate step between `main()` and `prepare()` so that we can
         capture the `self.osd_id` in case we need to rollback
@@ -75,7 +76,7 @@ class RawBlueStore(BlueStore):
         except Exception:
             logger.exception('raw prepare was unable to complete')
             logger.info('will rollback OSD ID creation')
-            rollback_osd(self.osd_id)
+            await rollback_osd(self.osd_id)
             raise
         dmcrypt_log = 'dmcrypt' if hasattr(args, 'dmcrypt') else 'clear'
         terminal.success("ceph-volume raw {} prepare "
@@ -83,7 +84,7 @@ class RawBlueStore(BlueStore):
                                                      self.args.data))
 
     @decorators.needs_root
-    def prepare(self) -> None:
+    async def prepare(self) -> None:
         self.osd_fsid = system.generate_uuid()
         crush_device_class = self.args.crush_device_class
         if self.encrypted and not self.with_tpm:
@@ -95,23 +96,23 @@ class RawBlueStore(BlueStore):
         tmpfs = not self.args.no_tmpfs
 
         # reuse a given ID if it exists, otherwise create a new ID
-        self.osd_id = prepare_utils.create_id(
+        self.osd_id = await prepare_utils.create_id(
             self.osd_fsid, json.dumps(self.secrets), self.osd_id)
 
         if self.encrypted:
-            self.prepare_dmcrypt()
+            await self.prepare_dmcrypt()
 
-        self.prepare_osd_req(tmpfs=tmpfs)
+        await self.prepare_osd_req(tmpfs=tmpfs)
 
         # prepare the osd filesystem
-        self.osd_mkfs()
+        await self.osd_mkfs()
 
-    def _activate(self, osd_id: str, osd_fsid: str) -> None:
+    async def _activate(self, osd_id: str, osd_fsid: str) -> None:
         # mount on tmpfs the osd directory
         self.osd_path = '/var/lib/ceph/osd/%s-%s' % (conf.cluster, osd_id)
         if not system.path_is_mounted(self.osd_path):
             # mkdir -p and mount as tmpfs
-            prepare_utils.create_osd_path(osd_id, tmpfs=not self.args.no_tmpfs)
+            await prepare_utils.create_osd_path(osd_id, tmpfs=not self.args.no_tmpfs)
 
         # XXX This needs to be removed once ceph-bluestore-tool can deal with
         # symlinks that exist in the osd dir
@@ -121,7 +122,7 @@ class RawBlueStore(BlueStore):
         # Once symlinks are removed, the osd dir can be 'primed again. chown
         # first, regardless of what currently exists so that ``prime-osd-dir``
         # can succeed even if permissions are somehow messed up
-        system.chown(self.osd_path)
+        await system.chown(self.osd_path)
         prime_command = [
             'ceph-bluestore-tool',
             'prime-osd-dir',
@@ -129,7 +130,7 @@ class RawBlueStore(BlueStore):
             '--no-mon-config',
             '--dev', self.block_device_path,
         ]
-        process.run(prime_command)
+        await process.run(prime_command)
 
         # always re-do the symlink regardless if it exists, so that the block,
         # block.wal, and block.db devices that may have changed can be mapped
@@ -142,12 +143,12 @@ class RawBlueStore(BlueStore):
         if self.wal_device_path:
             prepare_utils.link_wal(self.wal_device_path, osd_id, osd_fsid)
 
-        system.chown(self.osd_path)
+        await system.chown(self.osd_path)
         terminal.success("ceph-volume raw activate "
                          "successful for osd ID: %s" % osd_id)
 
     @decorators.needs_root
-    def activate(self) -> None:
+    async def activate(self) -> None:
         """Activate Ceph OSDs on the system.
 
         This function activates Ceph Object Storage Daemons (OSDs) on the system.
@@ -163,12 +164,12 @@ class RawBlueStore(BlueStore):
 
         activated_any: bool = False
 
-        for d in disk.lsblk_all(abspath=True):
+        for d in await disk.lsblk_all(abspath=True):
             device: str = d.get('NAME', '')
             luks2 = encryption_utils.CephLuks2(device)
             if luks2.is_ceph_encrypted:
                 if luks2.is_tpm2_enrolled and self.osd_fsid == luks2.osd_fsid:
-                    self.pre_activate_tpm2(device)
+                    await self.pre_activate_tpm2(device)
         found = direct_report(self.devices)
 
         holders = disk.get_block_device_holders()
@@ -186,13 +187,13 @@ class RawBlueStore(BlueStore):
             self.db_device_path = meta.get('device_db', '')
             self.wal_device_path = meta.get('device_wal', '')
             logger.info(f'Activating osd.{osd_id} uuid {osd_uuid} cluster {meta["ceph_fsid"]}')
-            self._activate(osd_id, osd_uuid)
+            await self._activate(osd_id, osd_uuid)
             activated_any = True
 
         if not activated_any:
             raise RuntimeError('did not find any matching OSD to activate')
 
-    def pre_activate_tpm2(self, device: str) -> None:
+    async def pre_activate_tpm2(self, device: str) -> None:
         """Pre-activate a TPM2-encrypted device for Ceph.
 
         This function pre-activates a TPM2-encrypted device for Ceph by opening the
@@ -212,13 +213,13 @@ class RawBlueStore(BlueStore):
         self.temp_mapper: str = f'activating-{os.path.basename(device)}'
         self.temp_mapper_path: str = f'/dev/mapper/{self.temp_mapper}'
         if not disk.BlockSysFs(device).has_active_dmcrypt_mapper:
-            encryption_utils.luks_open(
+            await encryption_utils.luks_open(
                 '',
                 device,
                 self.temp_mapper,
                 self.with_tpm
             )
-            bluestore_header: Dict[str, Any] = disk.get_bluestore_header(self.temp_mapper_path)
+            bluestore_header: Dict[str, Any] = await disk.get_bluestore_header(self.temp_mapper_path)
             if not bluestore_header:
                 raise RuntimeError(f"{device} doesn't have BlueStore signature.")
 
@@ -228,5 +229,5 @@ class RawBlueStore(BlueStore):
             self.block_device_path = f'/dev/mapper/{new_mapper}'
             self.devices.append(self.block_device_path)
             # An option could be to simply rename the mapper but the uuid remains unchanged in sysfs
-            encryption_utils.luks_close(self.temp_mapper)
-            encryption_utils.luks_open('', device, new_mapper, self.with_tpm)
+            await encryption_utils.luks_close(self.temp_mapper)
+            await encryption_utils.luks_open('', device, new_mapper, self.with_tpm)

@@ -336,7 +336,7 @@ class Batch(object):
         self.args.db_devices = ssd
 
     @decorators.needs_root
-    def main(self) -> None:
+    async def main(self) -> None:
         if not self.args.devices:
             self.parser.print_help()
             raise SystemExit(0)
@@ -368,9 +368,9 @@ class Batch(object):
                 terminal.error('aborting OSD provisioning')
                 raise SystemExit(0)
 
-        self._execute(plan)
+        await self._execute(plan)
 
-    def _execute(self, plan: List["OSD"]) -> None:
+    async def _execute(self, plan: List["OSD"]) -> None:
         defaults = common.get_default_args()
         global_args = [
             'bluestore',
@@ -384,7 +384,7 @@ class Batch(object):
             args = osd.get_args(defaults)
             if self.args.prepare:
                 p = Prepare([], args=argparse.Namespace(**args))
-                p.main()
+                await p.main()
             else:
                 c = Create([], args=argparse.Namespace(**args))
                 c.create()
@@ -419,6 +419,8 @@ class Batch(object):
 
         if self.args.objectstore == 'bluestore':
             fast_type = 'block_db'
+        else:
+            return []
         fast_allocations = self.fast_allocations(fast_devices,
                                                  requested_osds,
                                                  num_osds,

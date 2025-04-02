@@ -33,7 +33,7 @@ class Trigger(object):
         self.argv = argv
 
     @decorators.needs_root
-    def main(self) -> None:
+    async def main(self) -> None:
         sub_command_help = dedent("""
         ** DO NOT USE DIRECTLY **
         This tool is meant to help the systemd unit that knows about OSDs.
@@ -70,4 +70,4 @@ class Trigger(object):
         args = parser.parse_args(self.argv)
         osd_id = parse_osd_id(args.systemd_data)
         osd_uuid = parse_osd_uuid(args.systemd_data)
-        Activate(['--auto-detect-objectstore', osd_id, osd_uuid]).main()
+        await Activate(['--auto-detect-objectstore', osd_id, osd_uuid]).main()

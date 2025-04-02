@@ -10,15 +10,15 @@ from typing import List, Optional
 logger = logging.getLogger(__name__)
 
 
-def deactivate_osd(osd_id: Optional[str] = None,
+async def deactivate_osd(osd_id: Optional[str] = None,
                    osd_uuid: Optional[str] = None) -> None:
 
     lvs = []
     if osd_uuid is not None:
-        lvs = get_lvs_by_tag('ceph.osd_fsid={}'.format(osd_uuid))
+        lvs = await get_lvs_by_tag('ceph.osd_fsid={}'.format(osd_uuid))
         osd_id = next(lv.tags['ceph.osd_id'] for lv in lvs)
     else:
-        lvs = get_lvs_by_tag('ceph.osd_id={}'.format(osd_id))
+        lvs = await get_lvs_by_tag('ceph.osd_id={}'.format(osd_id))
 
     data_lv = next(lv for lv in lvs if lv.tags['ceph.type'] in ['data', 'block'])
 
@@ -26,11 +26,11 @@ def deactivate_osd(osd_id: Optional[str] = None,
     logger.debug('Found cluster name {}'.format(conf.cluster))
 
     tmpfs_path = '/var/lib/ceph/osd/{}-{}'.format(conf.cluster, osd_id)
-    system.unmount_tmpfs(tmpfs_path)
+    await system.unmount_tmpfs(tmpfs_path)
 
     for lv in lvs:
         if lv.tags.get('ceph.encrypted', '0') == '1':
-            encryption.dmcrypt_close(mapping=lv.lv_uuid, skip_path_check=True)
+            await encryption.dmcrypt_close(mapping=lv.lv_uuid, skip_path_check=True)
 
 
 class Deactivate(object):
@@ -40,17 +40,17 @@ class Deactivate(object):
     def __init__(self, argv: Optional[List[str]] = None) -> None:
         self.argv = argv
 
-    def deactivate(self, args: Optional[argparse.Namespace] = None) -> None:
+    async def deactivate(self, args: Optional[argparse.Namespace] = None) -> None:
         if args:
             self.args = args
         try:
-            deactivate_osd(self.args.osd_id, self.args.osd_uuid)
+            await deactivate_osd(self.args.osd_id, self.args.osd_uuid)
         except StopIteration:
             logger.error(('No data or block LV found for OSD'
                           '{}').format(self.args.osd_id))
             sys.exit(1)
 
-    def main(self) -> None:
+    async def main(self) -> None:
         sub_command_help = dedent("""
         Deactivate unmounts and OSDs tmpfs and closes any crypt devices.
 
@@ -89,4 +89,4 @@ class Deactivate(object):
         if not args.osd_id and not args.osd_uuid:
             raise ValueError(('Can not identify OSD, pass either all or'
                              'osd_id or osd_uuid'))
-        self.deactivate(args)
+        await self.deactivate(args)

@@ -322,7 +322,7 @@ class Migrate(object):
                    mapping = device.lv_api.lv_uuid, skip_path_check=True)
 
     @decorators.needs_root
-    def migrate_to_new(self, osd_id, osd_fsid, devices, target_lv):
+    async def migrate_to_new(self, osd_id, osd_fsid, devices, target_lv):
         source_devices = self.get_source_devices(devices)
         target_type = self.get_target_type_by_source(source_devices)
         if not target_type:
@@ -352,7 +352,7 @@ class Migrate(object):
             source_args = self.get_source_args(osd_path, source_devices)
             mlogger.info("Migrate to new, Source: {} Target: {}".format(
                 source_args, target_path))
-            stdout, stderr, exit_code = process.call([
+            _, _, exit_code = await process.call([
                 'ceph-bluestore-tool',
                 '--path',
                 osd_path,
@@ -383,7 +383,7 @@ class Migrate(object):
         return
 
     @decorators.needs_root
-    def migrate_to_existing(self, osd_id, osd_fsid, devices, target_lv):
+    async def migrate_to_existing(self, osd_id, osd_fsid, devices, target_lv):
         target_type = target_lv.tags["ceph.type"]
         if target_type == "wal":
             mlogger.error("Migrate to WAL is not supported")
@@ -409,7 +409,7 @@ class Migrate(object):
             source_args = self.get_source_args(osd_path, source_devices)
             mlogger.info("Migrate to existing, Source: {} Target: {}".format(
                 source_args, target_path))
-            stdout, stderr, exit_code = process.call([
+            _, _, exit_code = await process.call([
                 'ceph-bluestore-tool',
                 '--path',
                 osd_path,
@@ -605,7 +605,7 @@ class NewVolume(object):
         return parser
 
     @decorators.needs_root
-    def make_new_volume(self, osd_id, osd_fsid, devices, target_lv):
+    async def make_new_volume(self, osd_id, osd_fsid, devices, target_lv):
         osd_path = get_osd_path(osd_id, osd_fsid)
         mlogger.info(
             'Making new volume at {} for OSD: {} ({})'.format(
@@ -622,7 +622,7 @@ class NewVolume(object):
         try:
             tag_tracker.update_tags_when_lv_create(self.create_type)
 
-            stdout, stderr, exit_code = process.call([
+            _, _, exit_code = await process.call([
                 'ceph-bluestore-tool',
                 '--path',
                 osd_path,
@@ -639,7 +639,7 @@ class NewVolume(object):
                     "Failed to attach new volume: {}".format(
                         self.args.target))
             else:
-                system.chown(os.path.join(osd_path, "block.{}".format(
+                await system.chown(os.path.join(osd_path, "block.{}".format(
                     self.create_type)))
                 terminal.success('New volume attached.')
         except:

@@ -22,27 +22,27 @@ class Create(object):
         self.args = args
 
     @decorators.needs_root
-    def create(self) -> None:
+    async def create(self) -> None:
         if self.args is not None:
             if not self.args.osd_fsid:
                 self.args.osd_fsid = system.generate_uuid()
             self.objectstore = objectstore.mapping['LVM'][self.args.objectstore](args=self.args)
             if self.objectstore is not None:
-                self.objectstore.safe_prepare()
+                await self.objectstore.safe_prepare()
                 osd_id = self.objectstore.osd_id
                 try:
                     # we try this for activate only when 'creating' an OSD, because a rollback should not
                     # happen when doing normal activation. For example when starting an OSD, systemd will call
                     # activate, which would never need to be rolled back.
-                    self.objectstore.activate()
+                    await self.objectstore.activate()
                 except Exception:
                     logger.exception('lvm activate was unable to complete, while creating the OSD')
                     logger.info('will rollback OSD ID creation')
-                    rollback_osd(osd_id)
+                    await rollback_osd(osd_id)
                     raise
                 terminal.success("ceph-volume lvm create successful for: %s" % self.args.data)
 
-    def main(self) -> None:
+    async def main(self) -> None:
         sub_command_help = dedent("""
         Create an OSD by assigning an ID and FSID, registering them with the
         cluster with an ID and FSID, formatting and mounting the volume, adding
@@ -81,4 +81,4 @@ class Create(object):
         if self.args.bluestore:
             self.args.objectstore = 'bluestore'
         self.objectstore = objectstore.mapping['LVM'][self.args.objectstore]
-        self.create()
+        await self.create()

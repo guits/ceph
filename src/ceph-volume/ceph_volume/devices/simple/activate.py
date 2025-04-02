@@ -117,7 +117,7 @@ class Activate(object):
             )
 
     @decorators.needs_root
-    def activate(self, args):
+    async def activate(self, args: argparse.Namespace) -> None:
         with open(args.json_config, 'r') as fp:
             osd_metadata = json.load(fp)
 
@@ -139,9 +139,9 @@ class Activate(object):
         if self.is_encrypted:
             lockbox_secret = osd_metadata.get('lockbox.keyring')
             # write the keyring always so that we can unlock
-            encryption_utils.write_lockbox_keyring(osd_id, osd_fsid, lockbox_secret)
+            await encryption_utils.write_lockbox_keyring(osd_id, osd_fsid, lockbox_secret)
             # Store the secret around so that the decrypt method can reuse
-            raw_dmcrypt_secret = encryption_utils.get_dmcrypt_key(osd_id, osd_fsid)
+            raw_dmcrypt_secret = await encryption_utils.get_dmcrypt_key(osd_id, osd_fsid)
             # Note how both these calls need b64decode. For some reason, the
             # way ceph-disk creates these keys, it stores them in the monitor
             # *undecoded*, requiring this decode call again. The lvm side of
@@ -166,7 +166,7 @@ class Activate(object):
         block_wal_device = self.get_device(osd_metadata.get('block.wal', {}).get('uuid'))
 
         if not system.device_is_mounted(data_device, destination=osd_dir):
-            process.run(['mount', '-v', data_device, osd_dir])
+            await process.run(['mount', '-v', data_device, osd_dir])
 
         device_map = {
             'block': block_device,
@@ -180,10 +180,10 @@ class Activate(object):
             # always re-do the symlink regardless if it exists, so that the journal
             # device path that may have changed can be mapped correctly every time
             destination = os.path.join(osd_dir, name)
-            process.run(['ln', '-snf', device, destination])
+            await process.run(['ln', '-snf', device, destination])
 
             # make sure that the journal has proper permissions
-            system.chown(device)
+            await system.chown(device)
 
         self.enable_systemd_units(osd_id, osd_fsid)
 

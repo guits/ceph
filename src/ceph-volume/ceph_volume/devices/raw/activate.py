@@ -3,7 +3,7 @@ import argparse
 import logging
 from textwrap import dedent
 from ceph_volume import objectstore
-
+from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -11,12 +11,12 @@ class Activate(object):
 
     help = 'Discover and prepare a data directory for a (BlueStore) OSD on a raw device'
 
-    def __init__(self, argv, args=None):
+    def __init__(self, argv: List[str], args: Optional[argparse.Namespace] = None) -> None:
         self.objectstore = None
         self.argv = argv
         self.args = args
 
-    def main(self):
+    async def main(self) -> None:
         sub_command_help = dedent("""
         Activate (BlueStore) OSD on a raw block device(s) based on the
         device label (normally the first block of the device).
@@ -96,4 +96,5 @@ class Activate(object):
                 self.args.devices.append(self.args.device)
 
         self.objectstore = objectstore.mapping['RAW'][self.args.objectstore](args=self.args)
-        self.objectstore.activate()
+        if self.objectstore is not None:
+            await self.objectstore.activate()

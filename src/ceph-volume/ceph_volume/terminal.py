@@ -185,13 +185,13 @@ class MultiLogger(object):
         self.logger.error(record)
 
 
-def dispatch(mapper, argv=None):
+async def dispatch(mapper, argv=None):
     argv = argv or sys.argv
     for count, arg in enumerate(argv, 1):
         if arg in mapper.keys():
             instance = mapper.get(arg)(argv[count:])
             if hasattr(instance, 'main'):
-                instance.main()
+                await instance.main()
                 raise SystemExit(0)
 
 

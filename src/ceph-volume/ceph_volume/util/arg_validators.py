@@ -44,7 +44,7 @@ class ValidDevice(object):
             return device.path
         return device
 
-    def _is_valid_device(self):
+    async def _is_valid_device(self) -> Device:
         error = None
         if not self._device.exists:
             error = "Unable to proceed with non-existing device: %s" % self.dev_path
@@ -68,8 +68,8 @@ class ValidZapDevice(ValidDevice):
         super().get_device(dev_path)
         return self._format_device(self._is_valid_device())
 
-    def _is_valid_device(self, raise_sys_exit=True):
-        super()._is_valid_device()
+    async def _is_valid_device(self, raise_sys_exit: bool = True) -> Device:
+        await super()._is_valid_device()
         return self._device
 
 
@@ -78,7 +78,7 @@ class ValidClearReplaceHeaderDevice(ValidDevice):
         super().get_device(dev_path)
         return self._format_device(self._is_valid_device())
 
-    def _is_valid_device(self) -> Device:
+    async def _is_valid_device(self) -> Device:
         if not self._device.is_being_replaced:
             mlogger.info(f'{self.dev_path} has no replacement header.')
         return self._device
@@ -89,7 +89,7 @@ class ValidDataDevice(ValidDevice):
         super().get_device(dev_path)
         return self._format_device(self._is_valid_device())
 
-    def _is_valid_device(self, raise_sys_exit=True):
+    async def _is_valid_device(self, raise_sys_exit: bool = True) -> Device:
         super()._is_valid_device()
         if self._device.used_by_ceph:
             terminal.info('Device {} is already prepared'.format(self.dev_path))
@@ -109,17 +109,19 @@ class ValidRawDevice(ValidDevice):
     def _format_device(self, device: Device) -> str:
         return device.path
 
-    def _is_valid_device(self, raise_sys_exit=True):
-        out, err, rc = process.call([
-	    'ceph-bluestore-tool', 'show-label',
-	    '--dev', self.dev_path], verbose_on_failure=False)
+    async def _is_valid_device(self, raise_sys_exit: bool = True) -> Device:
+        _, _, rc = await process.call(
+            [
+                'ceph-bluestore-tool', 'show-label',
+	            '--dev', self.dev_path
+            ], verbose_on_failure=False)
         if not rc:
             terminal.info("Raw device {} is already prepared.".format(self.dev_path))
             raise SystemExit(0)
-        if disk.blkid(self.dev_path).get('TYPE') == 'crypto_LUKS':
+        if await disk.blkid(self.dev_path).get('TYPE') == 'crypto_LUKS':
             terminal.info("Raw device {} might already be in use for a dmcrypt OSD, skipping.".format(self.dev_path))
             raise SystemExit(0)
-        super()._is_valid_device()
+        await super()._is_valid_device()
         return self._device
 
 class ValidBatchDevice(ValidDevice):
@@ -127,8 +129,8 @@ class ValidBatchDevice(ValidDevice):
         super().get_device(dev_path)
         return self._format_device(self._is_valid_device())
 
-    def _is_valid_device(self, raise_sys_exit=False):
-        super()._is_valid_device()
+    async def _is_valid_device(self, raise_sys_exit: bool = False) -> Device:
+        await super()._is_valid_device()
         if self._device.is_partition:
             raise argparse.ArgumentError(
                 None,
@@ -142,7 +144,7 @@ class ValidBatchDataDevice(ValidBatchDevice, ValidDataDevice):
         super().get_device(dev_path)
         return self._format_device(self._is_valid_device())
 
-    def _is_valid_device(self):
+    async def _is_valid_device(self, raise_sys_exit: bool = False) -> Device:
         # if device is already used by ceph,
         # leave the validation to Batch.get_deployment_layout()
         # This way the idempotency isn't broken (especially when using --osds-per-device)
@@ -151,7 +153,7 @@ class ValidBatchDataDevice(ValidBatchDevice, ValidDataDevice):
                 return self._device
         if self._device.used_by_ceph:
             return self._device
-        super()._is_valid_device(raise_sys_exit=False)
+        await super()._is_valid_device(raise_sys_exit=False)
         return self._device
 
 

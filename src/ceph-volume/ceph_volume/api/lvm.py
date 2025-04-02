@@ -105,7 +105,7 @@ def _output_parser(output: List[str], fields: str) -> List[Dict[str, Any]]:
     return report
 
 
-def _splitname_parser(line: str) -> Dict[str, Any]:
+def _splitname_parser(line: List[str]) -> Dict[str, Any]:
     """
     Parses the output from ``dmsetup splitname``, that should contain prefixes
     (--nameprefixes) and set the separator to ";"
@@ -305,7 +305,7 @@ def is_vdo(path: str) -> str:
         return '0'
 
 
-def dmsetup_splitname(dev: str) -> Dict[str, Any]:
+async def dmsetup_splitname(dev: str) -> Dict[str, Any]:
     """
     Run ``dmsetup splitname`` and parse the results.
 
@@ -317,7 +317,7 @@ def dmsetup_splitname(dev: str) -> Dict[str, Any]:
         'dmsetup', 'splitname', '--noheadings',
         "--separator=';'", '--nameprefixes', dev
     ]
-    out, err, rc = process.call(command)
+    out, _, _ = await process.call(command)
     return _splitname_parser(out)
 
 
@@ -356,7 +356,7 @@ class Lvm:
             result.extend([op, f'{k}={v}'])
         return result
 
-    def clear_tags(self, keys: Optional[List[str]] = None) -> None:
+    async def clear_tags(self, keys: Optional[List[str]] = None) -> None:
         """
         Removes all or passed tags.
         """
@@ -369,25 +369,30 @@ class Lvm:
             return
         del_tag_args = self._format_tag_args('--deltag', del_tags)
         # --deltag returns successful even if the to be deleted tag is not set
-        process.call([self.binary_change] + del_tag_args + [self.path], run_on_host=True)
+        await process.call([self.binary_change] + del_tag_args + [self.path], run_on_host=True)
         for k in del_tags.keys():
             del self.tags[k]
 
-    def clear_tag(self, key: str) -> None:
+    async def clear_tag(self, key: str) -> None:
+        """Removes a specific tag
+
+        Args:
+            key (str): The tag to be removed.
+        """
         if self.tags.get(key):
             current_value = self.tags[key]
             tag = "%s=%s" % (key, current_value)
-            process.call([self.binary_change, '--deltag', tag, self.path], run_on_host=True)
+            await process.call([self.binary_change, '--deltag', tag, self.path], run_on_host=True)
             del self.tags[key]
 
-    def set_tag(self, key: str, value: str) -> None:
+    async def set_tag(self, key: str, value: str) -> None:
         """
         Set the key/value pair as an LVM tag.
         """
         # remove it first if it exists
-        self.clear_tag(key)
+        await self.clear_tag(key)
 
-        process.call(
+        await process.call(
             [
                 self.binary_change,
                 '--addtag', '%s=%s' % (key, value), self.path
@@ -396,7 +401,7 @@ class Lvm:
         )
         self.tags[key] = value
 
-    def set_tags(self, tags: Dict[str, Any]) -> None:
+    async def set_tags(self, tags: Dict[str, Any]) -> None:
         """
         :param tags: A dictionary of tag names and values, like::
 
@@ -408,17 +413,17 @@ class Lvm:
         At the end of all modifications, the tags are refreshed to reflect
         LVM's most current view.
         """
-        self.clear_tags(list(tags.keys()))
+        await self.clear_tags(list(tags.keys()))
         add_tag_args = self._format_tag_args('--addtag', tags)
-        process.call([self.binary_change] + add_tag_args + [self.path], run_on_host=True)
+        await process.call([self.binary_change] + add_tag_args + [self.path], run_on_host=True)
         for k, v in tags.items():
             self.tags[k] = v
 
-    def deactivate(self) -> None:
+    async def deactivate(self) -> None:
         """
         Deactivate the LV by calling lvchange -an
         """
-        process.call([self.binary_change, '-an', self.path], run_on_host=True)
+        await process.call([self.binary_change, '-an', self.path], run_on_host=True)
 
 ####################################
 #
@@ -437,12 +442,13 @@ class PVolume(Lvm):
     def __init__(self, **kw: Any) -> None:
         self.pv_name: str = ''
         self.pv_uuid: str = ''
+        self.lv_uuid: str = ''
         super().__init__('pv_name', 'pv_tags', **kw)
         self.pv_api = kw
         self.binary_change: str = 'pvchange'
         self.path: str = self.pv_name
 
-    def set_tags(self, tags: Dict[str, Any]) -> None:
+    async def set_tags(self, tags: Dict[str, Any]) -> None:
         """
         :param tags: A dictionary of tag names and values, like::
 
@@ -455,18 +461,18 @@ class PVolume(Lvm):
         LVM's most current view.
         """
         for k, v in tags.items():
-            self.set_tag(k, v)
+            await self.set_tag(k, v)
         # after setting all the tags, refresh them for the current object, use the
         # pv_* identifiers to filter because those shouldn't change
-        pv_object = get_single_pv(filters={'pv_name': self.pv_name,
-                                           'pv_uuid': self.pv_uuid})
+        pv_object = await get_single_pv(filters={'pv_name': self.pv_name,
+                                                 'pv_uuid': self.pv_uuid})
 
         if not pv_object:
             raise RuntimeError('No PV was found.')
 
         self.tags = pv_object.tags
 
-    def set_tag(self, key: str, value: str) -> None:
+    async def set_tag(self, key: str, value: str) -> None:
         """
         Set the key/value pair as an LVM tag. Does not "refresh" the values of
         the current object for its tags. Meant to be a "fire and forget" type
@@ -481,9 +487,9 @@ class PVolume(Lvm):
         if self.tags.get(key):
             current_value = self.tags[key]
             tag = "%s=%s" % (key, current_value)
-            process.call(['pvchange', '--deltag', tag, self.pv_name], run_on_host=True)
+            await process.call(['pvchange', '--deltag', tag, self.pv_name], run_on_host=True)
 
-        process.call(
+        await process.call(
             [
                 'pvchange',
                 '--addtag', '%s=%s' % (key, value), self.pv_name
@@ -492,21 +498,24 @@ class PVolume(Lvm):
         )
 
 
-def create_pv(device: str) -> None:
+async def create_pv(device: str) -> None:
     """
     Create a physical volume from a device, useful when devices need to be later mapped
     to journals.
     """
-    process.run([
-        'pvcreate',
-        '-v',  # verbose
-        '-f',  # force it
-        '--yes', # answer yes to any prompts
-        device
-    ], run_on_host=True)
+    await process.run(
+        [
+            'pvcreate',
+            '-v',  # verbose
+            '-f',  # force it
+            '--yes', # answer yes to any prompts
+            device
+        ],
+        run_on_host=True
+    )
 
 
-def remove_pv(pv_name: str) -> None:
+async def remove_pv(pv_name: str) -> None:
     """
     Removes a physical volume using a double `-f` to prevent prompts and fully
     remove anything related to LVM. This is tremendously destructive, but so is all other actions
@@ -521,7 +530,7 @@ def remove_pv(pv_name: str) -> None:
     cannot handle while accommodating custom user filters.
     """
     fail_msg = "Unable to remove vg %s" % pv_name
-    process.run(
+    await process.run(
         [
             'pvremove',
             '-v',  # verbose
@@ -534,7 +543,7 @@ def remove_pv(pv_name: str) -> None:
     )
 
 
-def get_pvs(fields: str = PV_FIELDS, filters: Optional[Dict[str, Any]] = None, tags: Optional[Dict[str, Any]] = None) -> List[PVolume]:
+async def get_pvs(fields: str = PV_FIELDS, filters: Optional[Dict[str, Any]] = None, tags: Optional[Dict[str, Any]] = None) -> List[PVolume]:
     """
     Return a list of PVs that are available on the system and match the
     filters and tags passed. Argument filters takes a dictionary containing
@@ -558,19 +567,19 @@ def get_pvs(fields: str = PV_FIELDS, filters: Optional[Dict[str, Any]] = None, t
     args = ['pvs', '--noheadings', '--readonly', '--separator=";"', '-S',
             filters_str, '-o', fields]
 
-    stdout, stderr, returncode = process.call(args, run_on_host=True, verbose_on_failure=False)
+    stdout, _, _ = await process.call(args, run_on_host=True, verbose_on_failure=False)
     pvs_report = _output_parser(stdout, fields)
     return [PVolume(**pv_report) for pv_report in pvs_report]
 
 
-def get_single_pv(fields: str = PV_FIELDS, filters: Optional[Dict[str, Any]] = None, tags: Optional[Dict[str, Any]] = None) -> Optional[PVolume]:
+async def get_single_pv(fields: str = PV_FIELDS, filters: Optional[Dict[str, Any]] = None, tags: Optional[Dict[str, Any]] = None) -> Optional[PVolume]:
     """
     Wrapper of get_pvs() meant to be a convenience method to avoid the phrase::
         pvs = get_pvs()
         if len(pvs) >= 1:
             pv = pvs[0]
     """
-    pvs = get_pvs(fields=fields, filters=filters, tags=tags)
+    pvs = await get_pvs(fields=fields, filters=filters, tags=tags)
 
     if len(pvs) == 0:
         return None
@@ -714,7 +723,7 @@ class VolumeGroup(Lvm):
         return int(int(self.vg_extent_count) / slots)
 
 
-def create_vg(devices: Union[str, Set, List[str]], name: Optional[str] = None, name_prefix: str = '') -> Optional[VolumeGroup]:
+async def create_vg(devices: Union[str, Set, List[str]], name: Optional[str] = None, name_prefix: str = '') -> Optional[VolumeGroup]:
     """
     Create a Volume Group. Command looks like::
 
@@ -736,18 +745,20 @@ def create_vg(devices: Union[str, Set, List[str]], name: Optional[str] = None, n
         name = "%s-%s" % (name_prefix, str(uuid.uuid4()))
     elif name is None:
         name = "ceph-%s" % str(uuid.uuid4())
-    process.run([
-        'vgcreate',
-        '--force',
-        '--yes',
-        name] + devices,
-        run_on_host=True
+    await process.run(
+        [
+            'vgcreate',
+            '--force',
+            '--yes',
+            name
+        ] + devices,
+            run_on_host=True
     )
 
-    return get_single_vg(filters={'vg_name': name})
+    return await get_single_vg(filters={'vg_name': name})
 
 
-def extend_vg(vg: VolumeGroup, devices: Union[List[str], str]) -> Optional[VolumeGroup]:
+async def extend_vg(vg: VolumeGroup, devices: Union[List[str], str]) -> Optional[VolumeGroup]:
     """
     Extend a Volume Group. Command looks like::
 
@@ -761,18 +772,20 @@ def extend_vg(vg: VolumeGroup, devices: Union[List[str], str]) -> Optional[Volum
     """
     if not isinstance(devices, list):
         devices = [devices]
-    process.run([
-        'vgextend',
-        '--force',
-        '--yes',
-        vg.name] + devices,
+    await process.run(
+        [
+            'vgextend',
+            '--force',
+            '--yes',
+            vg.name
+        ] + devices,
         run_on_host=True
     )
 
-    return get_single_vg(filters={'vg_name': vg.name})
+    return await get_single_vg(filters={'vg_name': vg.name})
 
 
-def reduce_vg(vg: VolumeGroup, devices: Union[List[str], str]) -> Optional[VolumeGroup]:
+async def reduce_vg(vg: VolumeGroup, devices: Union[List[str], str]) -> Optional[VolumeGroup]:
     """
     Reduce a Volume Group. Command looks like::
 
@@ -784,18 +797,20 @@ def reduce_vg(vg: VolumeGroup, devices: Union[List[str], str]) -> Optional[Volum
     """
     if not isinstance(devices, list):
         devices = [devices]
-    process.run([
-        'vgreduce',
-        '--force',
-        '--yes',
-        vg.name] + devices,
+    await process.run(
+        [
+            'vgreduce',
+            '--force',
+            '--yes',
+            vg.name
+        ] + devices,
         run_on_host=True
     )
 
-    return get_single_vg(filters={'vg_name': vg.name})
+    return await get_single_vg(filters={'vg_name': vg.name})
 
 
-def remove_vg(vg_name: str) -> None:
+async def remove_vg(vg_name: str) -> None:
     """
     Removes a volume group.
     """
@@ -803,7 +818,7 @@ def remove_vg(vg_name: str) -> None:
         logger.warning('Skipping removal of invalid VG name: "%s"', vg_name)
         return
     fail_msg = "Unable to remove vg %s" % vg_name
-    process.run(
+    await process.run(
         [
             'vgremove',
             '-v',  # verbose
@@ -815,7 +830,7 @@ def remove_vg(vg_name: str) -> None:
     )
 
 
-def get_vgs(fields: str = VG_FIELDS, filters: Optional[Dict[str, Any]] = None, tags: Optional[Dict[str, Any]] = None) -> List[VolumeGroup]:
+async def get_vgs(fields: str = VG_FIELDS, filters: Optional[Dict[str, Any]] = None, tags: Optional[Dict[str, Any]] = None) -> List[VolumeGroup]:
     """
     Return a list of VGs that are available on the system and match the
     filters and tags passed. Argument filters takes a dictionary containing
@@ -838,19 +853,19 @@ def get_vgs(fields: str = VG_FIELDS, filters: Optional[Dict[str, Any]] = None, t
     filters_str = make_filters_lvmcmd_ready(filters, tags)
     args = ['vgs'] + VG_CMD_OPTIONS + ['-S', filters_str, '-o', fields]
 
-    stdout, stderr, returncode = process.call(args, run_on_host=True, verbose_on_failure=False)
+    stdout, _, _ = await process.call(args, run_on_host=True, verbose_on_failure=False)
     vgs_report =_output_parser(stdout, fields)
     return [VolumeGroup(**vg_report) for vg_report in vgs_report]
 
 
-def get_single_vg(fields: str = VG_FIELDS, filters: Optional[Dict[str, Any]] = None, tags: Optional[Dict[str, Any]] = None) -> Optional[VolumeGroup]:
+async def get_single_vg(fields: str = VG_FIELDS, filters: Optional[Dict[str, Any]] = None, tags: Optional[Dict[str, Any]] = None) -> Optional[VolumeGroup]:
     """
     Wrapper of get_vgs() meant to be a convenience method to avoid the phrase::
         vgs = get_vgs()
         if len(vgs) >= 1:
             vg = vgs[0]
     """
-    vgs = get_vgs(fields=fields, filters=filters, tags=tags)
+    vgs = await get_vgs(fields=fields, filters=filters, tags=tags)
 
     if len(vgs) == 0:
         return None
@@ -860,8 +875,8 @@ def get_single_vg(fields: str = VG_FIELDS, filters: Optional[Dict[str, Any]] = N
     return vgs[0]
 
 
-def get_device_vgs(device: str, name_prefix: str = '') -> List[VolumeGroup]:
-    stdout, stderr, returncode = process.call(
+async def get_device_vgs(device: str, name_prefix: str = '') -> List[VolumeGroup]:
+    stdout, _, _ = await process.call(
         ['pvs'] + VG_CMD_OPTIONS + ['-o', VG_FIELDS, device],
         run_on_host=True,
         verbose_on_failure=False
@@ -870,10 +885,10 @@ def get_device_vgs(device: str, name_prefix: str = '') -> List[VolumeGroup]:
     return [VolumeGroup(**vg) for vg in vgs if vg['vg_name'] and vg['vg_name'].startswith(name_prefix)]
 
 
-def get_all_devices_vgs(name_prefix: str = '') -> List[VolumeGroup]:
+async def get_all_devices_vgs(name_prefix: str = '') -> List[VolumeGroup]:
     vg_fields = f'pv_name,{VG_FIELDS}'
     cmd = ['pvs'] + VG_CMD_OPTIONS + ['-o', vg_fields]
-    stdout, stderr, returncode = process.call(
+    stdout, _, _ = await process.call(
         cmd,
         run_on_host=True,
         verbose_on_failure=False
@@ -946,7 +961,7 @@ class Volume(Lvm):
             report[type_uuid] = self.tags['ceph.{}'.format(type_uuid)]
             return report
 
-def create_lv(name_prefix: str,
+async def create_lv(name_prefix: str,
               uuid: str,
               vg: Optional[VolumeGroup] = None,
               device: Optional[str] = None,
@@ -983,12 +998,12 @@ def create_lv(name_prefix: str,
         if not device:
             raise RuntimeError("Must either specify vg or device, none given")
         # check if a vgs starting with ceph already exists
-        vgs = get_device_vgs(device, 'ceph')
+        vgs = await get_device_vgs(device, 'ceph')
         if vgs:
             vg = vgs[0]
         else:
             # create on if not
-            vg = create_vg(device, name_prefix='ceph')
+            vg = await create_vg(device, name_prefix='ceph')
     assert(vg)
 
     if size:
@@ -1016,9 +1031,9 @@ def create_lv(name_prefix: str,
             '100%FREE',
             '-n', name, vg.vg_name
         ]
-    process.run(command, run_on_host=True)
+    await process.run(command, run_on_host=True)
 
-    lv = get_single_lv(filters={'lv_name': name, 'vg_name': vg.vg_name})
+    lv = await get_single_lv(filters={'lv_name': name, 'vg_name': vg.vg_name})
 
     if tags is None:
         tags = {
@@ -1042,12 +1057,12 @@ def create_lv(name_prefix: str,
         tags.update({path_tag: lv.lv_path})
 
     if isinstance(lv, Volume):
-        lv.set_tags(tags)
+        await lv.set_tags(tags)
 
     return lv
 
 
-def create_lvs(volume_group: VolumeGroup, parts: int = 1, size: Optional[int] = None, name_prefix: str = 'ceph-lv') -> List[Optional[Volume]]:
+async def create_lvs(volume_group: VolumeGroup, parts: int = 1, size: Optional[int] = None, name_prefix: str = 'ceph-lv') -> List[Optional[Volume]]:
     """
     Create multiple Logical Volumes from a Volume Group by calculating the
     proper extents from ``parts`` or ``size``. A custom prefix can be used
@@ -1082,12 +1097,12 @@ def create_lvs(volume_group: VolumeGroup, parts: int = 1, size: Optional[int] = 
         size = sizing['sizes']
         extents = sizing['extents']
         lvs.append(
-            create_lv(name_prefix, str(uuid.uuid4()), vg=volume_group, extents=extents, tags=tags)
+            await create_lv(name_prefix, str(uuid.uuid4()), vg=volume_group, extents=extents, tags=tags)
         )
     return lvs
 
 
-def remove_lv(lv: Union[str, Volume]) -> bool:
+async def remove_lv(lv: Union[str, Volume]) -> bool:
     """
     Removes a logical volume given it's absolute path.
 
@@ -1101,7 +1116,7 @@ def remove_lv(lv: Union[str, Volume]) -> bool:
     else:
         path = lv
 
-    stdout, stderr, returncode = process.call(
+    _, _, returncode = await process.call(
         [
             'lvremove',
             '-v',  # verbose
@@ -1117,7 +1132,7 @@ def remove_lv(lv: Union[str, Volume]) -> bool:
     return True
 
 
-def get_lvs(fields: str = LV_FIELDS, filters: Optional[Dict[str, Any]] = None, tags: Optional[Dict[str, Any]] = None) -> List[Volume]:
+async def get_lvs(fields: str = LV_FIELDS, filters: Optional[Dict[str, Any]] = None, tags: Optional[Dict[str, Any]] = None) -> List[Volume]:
     """
     Return a list of LVs that are available on the system and match the
     filters and tags passed. Argument filters takes a dictionary containing
@@ -1140,19 +1155,19 @@ def get_lvs(fields: str = LV_FIELDS, filters: Optional[Dict[str, Any]] = None, t
     filters_str = make_filters_lvmcmd_ready(filters, tags)
     args = ['lvs'] + LV_CMD_OPTIONS + ['-S', filters_str, '-o', fields]
 
-    stdout, stderr, returncode = process.call(args, run_on_host=True, verbose_on_failure=False)
+    stdout, _, _ = await process.call(args, run_on_host=True, verbose_on_failure=False)
     lvs_report = _output_parser(stdout, fields)
     return [Volume(**lv_report) for lv_report in lvs_report]
 
 
-def get_single_lv(fields: str = LV_FIELDS, filters: Optional[Dict[str, Any]] = None, tags: Optional[Dict[str, Any]] = None) -> Optional[Volume]:
+async def get_single_lv(fields: str = LV_FIELDS, filters: Optional[Dict[str, Any]] = None, tags: Optional[Dict[str, Any]] = None) -> Optional[Volume]:
     """
     Wrapper of get_lvs() meant to be a convenience method to avoid the phrase::
         lvs = get_lvs()
         if len(lvs) >= 1:
             lv = lvs[0]
     """
-    lvs = get_lvs(fields=fields, filters=filters, tags=tags)
+    lvs = await get_lvs(fields=fields, filters=filters, tags=tags)
 
     if len(lvs) == 0:
         return None
@@ -1162,16 +1177,16 @@ def get_single_lv(fields: str = LV_FIELDS, filters: Optional[Dict[str, Any]] = N
     return lvs[0]
 
 
-def get_lvs_from_osd_id(osd_id: str) -> List[Volume]:
-    return get_lvs(tags={'ceph.osd_id': osd_id})
+async def get_lvs_from_osd_id(osd_id: str) -> List[Volume]:
+    return await get_lvs(tags={'ceph.osd_id': osd_id})
 
 
-def get_single_lv_from_osd_id(osd_id: str) -> Optional[Volume]:
-    return get_single_lv(tags={'ceph.osd_id': osd_id})
+async def get_single_lv_from_osd_id(osd_id: str) -> Optional[Volume]:
+    return await get_single_lv(tags={'ceph.osd_id': osd_id})
 
 
-def get_lv_by_name(name: str) -> List[Volume]:
-    stdout, stderr, returncode = process.call(
+async def get_lv_by_name(name: str) -> List[Volume]:
+    stdout, _, _ = await process.call(
         ['lvs', '--noheadings', '-o', LV_FIELDS, '-S',
          'lv_name={}'.format(name)],
         run_on_host=True,
@@ -1181,8 +1196,8 @@ def get_lv_by_name(name: str) -> List[Volume]:
     return [Volume(**lv) for lv in lvs]
 
 
-def get_lvs_by_tag(lv_tag: str) -> List[Volume]:
-    stdout, stderr, returncode = process.call(
+async def get_lvs_by_tag(lv_tag: str) -> List[Volume]:
+    stdout, _, _ = await process.call(
         ['lvs', '--noheadings', '--separator=";"', '-a', '-o', LV_FIELDS, '-S',
          'lv_tags={{{}}}'.format(lv_tag)],
         run_on_host=True,
@@ -1192,8 +1207,8 @@ def get_lvs_by_tag(lv_tag: str) -> List[Volume]:
     return [Volume(**lv) for lv in lvs]
 
 
-def get_device_lvs(device: str, name_prefix: str = '') -> List[Volume]:
-    stdout, stderr, returncode = process.call(
+async def get_device_lvs(device: str, name_prefix: str = '') -> List[Volume]:
+    stdout, _, _ = await process.call(
         ['pvs'] + LV_CMD_OPTIONS + ['-o', LV_FIELDS, device],
         run_on_host=True,
         verbose_on_failure=False
@@ -1202,25 +1217,29 @@ def get_device_lvs(device: str, name_prefix: str = '') -> List[Volume]:
     return [Volume(**lv) for lv in lvs if lv['lv_name'] and
             lv['lv_name'].startswith(name_prefix)]
 
-def get_lvs_from_path(devpath: str) -> List[Volume]:
+async def get_lvs_from_path(devpath: str) -> List[Volume]:
     lvs = []
     if os.path.isabs(devpath):
         # we have a block device
-        lvs = get_device_lvs(devpath)
+        lvs = await get_device_lvs(devpath)
         if not lvs:
             # maybe this was a LV path /dev/vg_name/lv_name or /dev/mapper/
-            lvs = get_lvs(filters={'path': devpath})
+            lvs = await get_lvs(filters={'path': devpath})
 
     return lvs
 
-def get_lv_by_fullname(full_name: str) -> Optional[Volume]:
+async def get_lv_by_fullname(full_name: str) -> Optional[Volume]:
     """
     returns LV by the specified LV's full name (formatted as vg_name/lv_name)
     """
     try:
         vg_name, lv_name = full_name.split('/')
-        res_lv = get_single_lv(filters={'lv_name': lv_name,
-                                        'vg_name': vg_name})
+        res_lv = await get_single_lv(
+            filters={
+                'lv_name': lv_name,
+                'vg_name': vg_name
+                }
+            )
     except ValueError:
         res_lv = None
     return res_lv

@@ -27,7 +27,7 @@ setup(
     ],
     entry_points = dict(
         console_scripts = [
-            'ceph-volume = ceph_volume.main:Volume',
+            'ceph-volume = ceph_volume.main:main',
             'ceph-volume-systemd = ceph_volume.systemd:main',
         ],
     ),

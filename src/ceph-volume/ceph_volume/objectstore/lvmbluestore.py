@@ -25,7 +25,7 @@ class LvmBlueStore(BlueStore):
         self.method = 'lvm'
         self.tags: Dict[str, Any] = {}
 
-    def pre_prepare(self) -> None:
+    async def pre_prepare(self) -> None:
         if self.encrypted and not self.with_tpm:
             self.secrets['dmcrypt_key'] = self.dmcrypt_key
 
@@ -36,9 +36,9 @@ class LvmBlueStore(BlueStore):
         if crush_device_class:
             self.secrets['crush_device_class'] = crush_device_class
         # reuse a given ID if it exists, otherwise create a new ID
-        self.osd_id = prepare_utils.create_id(self.osd_fsid,
-                                              json.dumps(self.secrets),
-                                              osd_id=self.args.osd_id)
+        self.osd_id = await prepare_utils.create_id(self.osd_fsid,
+                                                    json.dumps(self.secrets),
+                                                    osd_id=self.args.osd_id)
         self.tags = {
             'ceph.osd_fsid': self.osd_fsid,
             'ceph.osd_id': self.osd_id,
@@ -50,13 +50,13 @@ class LvmBlueStore(BlueStore):
 
         try:
             vg_name, lv_name = self.args.data.split('/')
-            self.block_lv = api.get_single_lv(filters={'lv_name': lv_name,
-                                                       'vg_name': vg_name})
+            self.block_lv = await api.get_single_lv(filters={'lv_name': lv_name,
+                                                             'vg_name': vg_name})
         except ValueError:
             self.block_lv = None
 
         if not self.block_lv:
-            self.block_lv = self.prepare_data_device('block', self.osd_fsid)
+            self.block_lv = await self.prepare_data_device('block', self.osd_fsid)
         self.block_device_path = self.block_lv.__dict__['lv_path']
 
         self.tags['ceph.block_device'] = self.block_lv.__dict__['lv_path']
@@ -66,7 +66,7 @@ class LvmBlueStore(BlueStore):
         self.tags['ceph.with_tpm'] = 1 if self.with_tpm else 0
         self.tags['ceph.vdo'] = api.is_vdo(self.block_lv.__dict__['lv_path'])
 
-    def prepare_data_device(self,
+    async def prepare_data_device(self,
                             device_type: str,
                             osd_uuid: str) -> Optional["Volume"]:
         """
@@ -92,7 +92,7 @@ class LvmBlueStore(BlueStore):
             logger.debug('data device size: {}'.format(self.args.data_size))
             if self.args.data_size != 0:
                 kwargs['size'] = self.args.data_size
-            return api.create_lv(
+            return await api.create_lv(
                 lv_name_prefix,
                 osd_uuid,
                 **kwargs)
@@ -102,8 +102,8 @@ class LvmBlueStore(BlueStore):
                 'A vg/lv path or an existing device is needed']
             raise RuntimeError(' '.join(error))
 
-    def safe_prepare(self,
-                     args: Optional["argparse.Namespace"] = None) -> None:
+    async def safe_prepare(self,
+                           args: Optional["argparse.Namespace"] = None) -> None:
         """
         An intermediate step between `main()` and `prepare()` so that we can
         capture the `self.osd_id` in case we need to rollback
@@ -119,25 +119,25 @@ class LvmBlueStore(BlueStore):
         except Exception:
             logger.exception('lvm prepare was unable to complete')
             logger.info('will rollback OSD ID creation')
-            rollback_osd(self.osd_id)
+            await rollback_osd(self.osd_id)
             raise
         terminal.success("ceph-volume lvm prepare successful for: %s" %
                          self.args.data)
 
     @decorators.needs_root
-    def prepare(self) -> None:
+    async def prepare(self) -> None:
         # 1/
         # Need to be reworked (move it to the parent class + call super()? )
-        self.pre_prepare()
+        await self.pre_prepare()
 
         # 2/
-        self.wal_device_path, wal_uuid, tags = self.setup_device(
+        self.wal_device_path, wal_uuid, tags = await self.setup_device(
             'wal',
             self.args.block_wal,
             self.tags,
             self.args.block_wal_size,
             self.args.block_wal_slots)
-        self.db_device_path, db_uuid, tags = self.setup_device(
+        self.db_device_path, db_uuid, tags = await self.setup_device(
             'db',
             self.args.block_db,
             self.tags,
@@ -149,16 +149,16 @@ class LvmBlueStore(BlueStore):
 
         # 3/ encryption-only operations
         if self.encrypted:
-            self.prepare_dmcrypt()
+            await self.prepare_dmcrypt()
 
         # 4/ osd_prepare req
-        self.prepare_osd_req()
+        await self.prepare_osd_req()
 
         # 5/ bluestore mkfs
         # prepare the osd filesystem
-        self.osd_mkfs()
+        await self.osd_mkfs()
 
-    def prepare_dmcrypt(self) -> None:
+    async def prepare_dmcrypt(self) -> None:
         # If encrypted, there is no need to create the lockbox keyring file
         # because bluestore re-creates the files and does not have support
         # for other files like the custom lockbox one. This will need to be
@@ -172,11 +172,13 @@ class LvmBlueStore(BlueStore):
             attr_name: str = f'{device_type}_device_path'
             path: str = self.__dict__[attr_name]
             if path:
-                self.__dict__[attr_name] = self.luks_format_and_open(path,
-                                                                     device_type,
-                                                                     self.tags)
+                self.__dict__[attr_name] = await self.luks_format_and_open(
+                    path,
+                    device_type,
+                    self.tags
+                )
 
-    def luks_format_and_open(self,
+    async def luks_format_and_open(self,
                              device: str,
                              device_type: str,
                              tags: Dict[str, Any]) -> str:
@@ -189,15 +191,15 @@ class LvmBlueStore(BlueStore):
         tag_name = 'ceph.%s_uuid' % device_type
         uuid = tags[tag_name]
         # format data device
-        encryption_utils.luks_format(
+        await encryption_utils.luks_format(
             self.dmcrypt_key,
             device
         )
 
         if self.with_tpm:
-            self.enroll_tpm2(device)
+            await self.enroll_tpm2(device)
 
-        encryption_utils.luks_open(
+        await encryption_utils.luks_open(
             self.dmcrypt_key,
             device,
             uuid,
@@ -205,7 +207,7 @@ class LvmBlueStore(BlueStore):
 
         return '/dev/mapper/%s' % uuid
 
-    def setup_device(self,
+    async def setup_device(self,
                      device_type: str,
                      device_name: str,
                      tags: Dict[str, Any],
@@ -226,7 +228,7 @@ class LvmBlueStore(BlueStore):
 
         try:
             vg_name, lv_name = device_name.split('/')
-            lv = api.get_single_lv(filters={'lv_name': lv_name,
+            lv = await api.get_single_lv(filters={'lv_name': lv_name,
                                             'vg_name': vg_name})
         except ValueError:
             lv = None
@@ -236,7 +238,7 @@ class LvmBlueStore(BlueStore):
             path = lv.lv_path
             tags['ceph.%s_uuid' % device_type] = lv_uuid
             tags['ceph.%s_device' % device_type] = path
-            lv.set_tags(tags)
+            await lv.set_tags(tags)
         elif disk.is_partition(device_name) or disk.is_device(device_name):
             # We got a disk or a partition, create an lv
             lv_type = "osd-{}".format(device_type)
@@ -255,13 +257,13 @@ class LvmBlueStore(BlueStore):
             # conf file
             if size != 0:
                 kwargs['size'] = size
-            lv = api.create_lv(**kwargs)
+            lv = await api.create_lv(**kwargs)
             if lv is not None:
                 path = lv.lv_path
                 lv_uuid = lv.lv_uuid
                 tags['ceph.{}_device'.format(device_type)] = path
                 tags['ceph.{}_uuid'.format(device_type)] = lv_uuid
-                lv.set_tags(tags)
+                await lv.set_tags(tags)
         else:
             # otherwise assume this is a regular disk partition
             name_uuid = self.get_ptuuid(device_name)
@@ -271,7 +273,7 @@ class LvmBlueStore(BlueStore):
             lv_uuid = name_uuid
         return path, lv_uuid, tags
 
-    def get_osd_device_path(self,
+    async def get_osd_device_path(self,
                             osd_lvs: List["Volume"],
                             device_type: str,
                             dmcrypt_secret: str = '') -> Optional[str]:
@@ -305,29 +307,29 @@ class LvmBlueStore(BlueStore):
                 break
         if device_lv:
             if is_encrypted:
-                encryption_utils.luks_open(dmcrypt_secret,
-                                           device_lv.__dict__['lv_path'],
-                                           device_uuid)
+                await encryption_utils.luks_open(dmcrypt_secret,
+                                                 device_lv.__dict__['lv_path'],
+                                                 device_uuid)
                 return '/dev/mapper/%s' % device_uuid
             return device_lv.__dict__['lv_path']
 
         # this could be a regular device, so query it with blkid
-        physical_device = disk.get_device_from_partuuid(device_uuid)
+        physical_device = await disk.get_device_from_partuuid(device_uuid)
         if physical_device:
             if is_encrypted:
-                encryption_utils.luks_open(dmcrypt_secret,
-                                           physical_device,
-                                           device_uuid)
+                await encryption_utils.luks_open(dmcrypt_secret,
+                                                 physical_device,
+                                                 device_uuid)
                 return '/dev/mapper/%s' % device_uuid
             return physical_device
 
         raise RuntimeError('could not find %s with uuid %s' % (device_type,
                                                                device_uuid))
 
-    def _activate(self,
-                  osd_lvs: List["Volume"],
-                  no_systemd: bool = False,
-                  no_tmpfs: bool = False) -> None:
+    async def _activate(self,
+                        osd_lvs: List["Volume"],
+                        no_systemd: bool = False,
+                        no_tmpfs: bool = False) -> None:
         for lv in osd_lvs:
             if lv.tags.get('ceph.type') == 'block':
                 osd_block_lv = lv
@@ -348,7 +350,7 @@ class LvmBlueStore(BlueStore):
         self.osd_path = '/var/lib/ceph/osd/%s-%s' % (conf.cluster, osd_id)
         if not system.path_is_mounted(self.osd_path):
             # mkdir -p and mount as tmpfs
-            prepare_utils.create_osd_path(osd_id, tmpfs=not no_tmpfs)
+            await prepare_utils.create_osd_path(osd_id, tmpfs=not no_tmpfs)
 
         # XXX This needs to be removed once ceph-bluestore-tool can deal with
         # symlinks that exist in the osd dir
@@ -360,10 +362,10 @@ class LvmBlueStore(BlueStore):
             lockbox_secret = osd_block_lv.tags['ceph.cephx_lockbox_secret']
             self.with_tpm = osd_block_lv.tags.get('ceph.with_tpm') == '1'
             if not self.with_tpm:
-                encryption_utils.write_lockbox_keyring(osd_id,
+                await encryption_utils.write_lockbox_keyring(osd_id,
                                                        osd_fsid,
                                                        lockbox_secret)
-                dmcrypt_secret = encryption_utils.get_dmcrypt_key(osd_id, osd_fsid)
+                dmcrypt_secret = await encryption_utils.get_dmcrypt_key(osd_id, osd_fsid)
             lv_path: str = osd_block_lv.__dict__['lv_path']
             if disk.has_holders(lv_path):
                 real_path_device = os.path.realpath(lv_path)
@@ -372,7 +374,7 @@ class LvmBlueStore(BlueStore):
                 if real_path_device in holders.keys() and real_path_device in holders.values():
                     osd_lv_path = disk.get_lvm_mapper_path_from_dm(next(k for k, v in holders.items() if v == real_path_device))
             else:
-                encryption_utils.luks_open(dmcrypt_secret,
+                await encryption_utils.luks_open(dmcrypt_secret,
                                            osd_block_lv.__dict__['lv_path'],
                                            osd_block_lv.__dict__['lv_uuid'],
                                            with_tpm=self.with_tpm)
@@ -380,58 +382,58 @@ class LvmBlueStore(BlueStore):
             osd_lv_path = osd_block_lv.__dict__['lv_path']
 
         db_device_path = \
-            self.get_osd_device_path(osd_lvs, 'db',
-                                     dmcrypt_secret=dmcrypt_secret)
+            await self.get_osd_device_path(osd_lvs, 'db',
+                                           dmcrypt_secret=dmcrypt_secret)
         wal_device_path = \
-            self.get_osd_device_path(osd_lvs,
-                                     'wal',
-                                     dmcrypt_secret=dmcrypt_secret)
+            await self.get_osd_device_path(osd_lvs,
+                                          'wal',
+                                           dmcrypt_secret=dmcrypt_secret)
 
         # Once symlinks are removed, the osd dir can be 'primed again.
         # chown first, regardless of what currently exists so that
         # ``prime-osd-dir`` can succeed even if permissions are
         # somehow messed up.
-        system.chown(self.osd_path)
+        await system.chown(self.osd_path)
         prime_command = [
             'ceph-bluestore-tool', '--cluster=%s' % conf.cluster,
             'prime-osd-dir', '--dev', osd_lv_path,
             '--path', self.osd_path, '--no-mon-config']
 
-        process.run(prime_command)
+        await process.run(prime_command)
         # always re-do the symlink regardless if it exists, so that the block,
         # block.wal, and block.db devices that may have changed can be mapped
         # correctly every time
-        process.run(['ln',
+        await process.run(['ln',
                      '-snf',
                      osd_lv_path,
                      os.path.join(self.osd_path, 'block')])
-        system.chown(os.path.join(self.osd_path, 'block'))
-        system.chown(self.osd_path)
+        await system.chown(os.path.join(self.osd_path, 'block'))
+        await system.chown(self.osd_path)
         if db_device_path:
             destination = os.path.join(self.osd_path, 'block.db')
-            process.run(['ln', '-snf', db_device_path, destination])
-            system.chown(db_device_path)
-            system.chown(destination)
+            await process.run(['ln', '-snf', db_device_path, destination])
+            await system.chown(db_device_path)
+            await system.chown(destination)
         if wal_device_path:
             destination = os.path.join(self.osd_path, 'block.wal')
-            process.run(['ln', '-snf', wal_device_path, destination])
-            system.chown(wal_device_path)
-            system.chown(destination)
+            await process.run(['ln', '-snf', wal_device_path, destination])
+            await system.chown(wal_device_path)
+            await system.chown(destination)
 
         if no_systemd is False:
             # enable the ceph-volume unit for this OSD
-            systemctl.enable_volume(osd_id, osd_fsid, 'lvm')
+            await systemctl.enable_volume(osd_id, osd_fsid, 'lvm')
 
             # enable the OSD
-            systemctl.enable_osd(osd_id)
+            await systemctl.enable_osd(osd_id)
 
             # start the OSD
-            systemctl.start_osd(osd_id)
+            await systemctl.start_osd(osd_id)
         terminal.success("ceph-volume lvm activate successful for osd ID: %s" %
                          osd_id)
 
     @decorators.needs_root
-    def activate_all(self) -> None:
+    async def activate_all(self) -> None:
         listed_osds = direct_report()
         osds = {}
         for osd_id, devices in listed_osds.items():
@@ -456,10 +458,10 @@ class LvmBlueStore(BlueStore):
             else:
                 terminal.info('Activating OSD ID %s FSID %s' % (osd_id,
                                                                 osd_fsid))
-                self.activate(self.args, osd_id=osd_id, osd_fsid=osd_fsid)
+                await self.activate(self.args, osd_id=osd_id, osd_fsid=osd_fsid)
 
     @decorators.needs_root
-    def activate(self,
+    async def activate(self,
                  args: Optional["argparse.Namespace"] = None,
                  osd_id: Optional[str] = None,
                  osd_fsid: Optional[str] = None) -> None:
@@ -482,11 +484,13 @@ class LvmBlueStore(BlueStore):
                                'osd_fsid too'.format(osd_id))
         else:
             raise RuntimeError('Please provide both osd_id and osd_fsid')
-        lvs = api.get_lvs(tags=tags)
+        lvs = await api.get_lvs(tags=tags)
         if not lvs:
             raise RuntimeError('could not find osd.%s with osd_fsid %s' %
                                (osd_id, osd_fsid))
 
-        self._activate(lvs, self.args.no_systemd, getattr(self.args,
-                                                          'no_tmpfs',
-                                                          False))
+        await self._activate(lvs, self.args.no_systemd, getattr(
+            self.args,
+            'no_tmpfs',
+            False)
+        )

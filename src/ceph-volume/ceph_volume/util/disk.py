@@ -7,8 +7,10 @@ import json
 from ceph_volume import process, allow_loop_devices
 from ceph_volume.api import lvm
 from ceph_volume.util.system import get_file_contents
-from typing import Dict, List, Any, Union, Optional
+from typing import Dict, List, Any, Union, Optional, TYPE_CHECKING
 
+if TYPE_CHECKING:
+    from ceph_volume.util.device import Device
 
 logger = logging.getLogger(__name__)
 
@@ -20,13 +22,13 @@ logger = logging.getLogger(__name__)
 # Xenial doesn't have this problem as it uses a newer blkid version.
 
 
-def get_partuuid(device):
+async def get_partuuid(device: str) -> str:
     """
     If a device is a partition, it will probably have a PARTUUID on it that
     will persist and can be queried against `blkid` later to detect the actual
     device
     """
-    out, err, rc = process.call(
+    out, _, _ = await process.call(
         ['blkid', '-c', '/dev/null', '-s', 'PARTUUID', '-o', 'value', device]
     )
     return ' '.join(out).strip()
@@ -74,7 +76,7 @@ def _blkid_parser(output):
     return processed
 
 
-def blkid(device):
+async def blkid(device: str) -> Dict[str, Any]:
     """
     The blkid interface to its CLI, creating an output similar to what is
     expected from ``lsblk``. In most cases, ``lsblk()`` should be the preferred
@@ -100,38 +102,38 @@ def blkid(device):
     PART_ENTRY_NAME                 PARTLABEL
     PART_ENTRY_UUID                 PARTUUID
     """
-    out, err, rc = process.call(
+    out, _, _ = await process.call(
         ['blkid', '-c', '/dev/null', '-p', device]
     )
     return _blkid_parser(' '.join(out))
 
 
-def get_part_entry_type(device):
+async def get_part_entry_type(device: str) -> str:
     """
     Parses the ``ID_PART_ENTRY_TYPE`` from the "low level" (bypasses the cache)
     output that uses the ``udev`` type of output. This output is intended to be
     used for udev rules, but it is useful in this case as it is the only
     consistent way to retrieve the GUID used by ceph-disk to identify devices.
     """
-    out, err, rc = process.call(['blkid', '-c', '/dev/null', '-p', '-o', 'udev', device])
+    out, _, _ = await process.call(['blkid', '-c', '/dev/null', '-p', '-o', 'udev', device])
     for line in out:
         if 'ID_PART_ENTRY_TYPE=' in line:
             return line.split('=')[-1].strip()
     return ''
 
 
-def get_device_from_partuuid(partuuid):
+async def get_device_from_partuuid(partuuid: str) -> str:
     """
     If a device has a partuuid, query blkid so that it can tell us what that
     device is
     """
-    out, err, rc = process.call(
+    out, _, _ = await process.call(
         ['blkid', '-c', '/dev/null', '-t', 'PARTUUID="%s"' % partuuid, '-o', 'device']
     )
     return ' '.join(out).strip()
 
 
-def remove_partition(device):
+async def remove_partition(device: "Device") -> None:
     """
     Removes a partition using parted
 
@@ -150,7 +152,7 @@ def remove_partition(device):
     if not partition_number:
         raise RuntimeError('Unable to detect the partition number for device: %s' % device.path)
 
-    process.run(
+    await process.run(
         ['parted', device.parent_device, '--script', '--', 'rm', partition_number]
     )
 
@@ -182,7 +184,7 @@ def _lsblk_parser(line):
     return parsed
 
 
-def device_family(device):
+async def device_family(device: str) -> List[str]:
     """
     Returns a list of associated devices. It assumes that ``device`` is
     a parent device. It is up to the caller to ensure that the device being
@@ -190,7 +192,7 @@ def device_family(device):
     """
     labels = ['NAME', 'PARTLABEL', 'TYPE']
     command = ['lsblk', '-P', '-p', '-o', ','.join(labels), device]
-    out, err, rc = process.call(command)
+    out, _, _ = await process.call(command)
     devices = []
     for line in out:
         devices.append(_lsblk_parser(line))
@@ -198,7 +200,7 @@ def device_family(device):
     return devices
 
 
-def udevadm_property(device, properties=[]):
+async def udevadm_property(device: str, properties: Optional[List[str]] = None) -> Dict[str, Any]:
     """
     Query udevadm for information about device properties.
     Optionally pass a list of properties to return. A requested property might
@@ -221,8 +223,10 @@ def udevadm_property(device, properties=[]):
         USEC_INITIALIZED=16117769
         ...
     """
-    out = _udevadm_info(device)
+    out = await _udevadm_info(device)
     ret = {}
+    if properties is None:
+        properties = []
     for line in out:
         p, v = line.split('=', 1)
         if not properties or p in properties:
@@ -230,30 +234,32 @@ def udevadm_property(device, properties=[]):
     return ret
 
 
-def _udevadm_info(device):
+async def _udevadm_info(device: str) -> List[str]:
     """
     Call udevadm and return the output
     """
     cmd = ['udevadm', 'info', '--query=property', device]
-    out, _err, _rc = process.call(cmd)
+    out, _, _ = await process.call(cmd)
     return out
 
 
-def lsblk(device, columns=None, abspath=False):
+async def lsblk(device: str,
+                columns: Optional[List[str]] = None,
+                abspath: bool = False) -> Dict[str, Any]:
     result = []
     if not os.path.isdir(device):
-        result = lsblk_all(device=device,
-                           columns=columns,
-                           abspath=abspath)
+        result = await lsblk_all(device=device,
+                                 columns=columns,
+                                 abspath=abspath)
     if not result:
         logger.debug(f"{device} not found is lsblk report")
         return {}
 
     return result[0]
 
-def lsblk_all(device: str = '',
-              columns: Optional[List[str]] = None,
-              abspath: bool = False) -> List[Dict[str, str]]:
+async def lsblk_all(device: str = '',
+                    columns: Optional[List[str]] = None,
+                    abspath: bool = False) -> List[Dict[str, str]]:
     """
     Create a dictionary of identifying values for a device using ``lsblk``.
     Each supported column is a key, in its *raw* format (all uppercase
@@ -334,7 +340,7 @@ def lsblk_all(device: str = '',
     if device:
         base_command.append('--nodeps')
         base_command.append(device)
-    out, err, rc = process.call(base_command)
+    out, err, rc = await process.call(base_command)
 
     if rc != 0:
         raise RuntimeError(f"Error: {err}")
@@ -347,7 +353,7 @@ def lsblk_all(device: str = '',
     return result
 
 
-def is_device(dev: str) -> bool:
+async def is_device(dev: str) -> bool:
     """
     Determines whether the given path corresponds to a block device (not a partition).
 
@@ -371,7 +377,8 @@ def is_device(dev: str) -> bool:
         if not allow_loop_devices():
             return False
 
-    TYPE = lsblk(dev).get('TYPE')
+    lsblk_result = await lsblk(dev)
+    TYPE = lsblk_result.get('TYPE')
     if TYPE:
         return TYPE in ['disk', 'mpath', 'loop']
 
@@ -390,7 +397,7 @@ def is_partition(dev: str) -> bool:
     return dev.split("/")[-1] in partitions
 
 
-def is_ceph_rbd(dev):
+def is_ceph_rbd(dev: str) -> bool:
     """
     Boolean to determine if a given device is a ceph RBD device, like /dev/rbd0
     """
@@ -403,19 +410,19 @@ class BaseFloatUnit(float):
     computed on child classes by inspecting the class name
     """
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return "<%s(%s)>" % (self.__class__.__name__, self.__float__())
 
-    def __str__(self):
+    def __str__(self) -> str:
         return "{size:.2f} {suffix}".format(
             size=self.__float__(),
             suffix=self.__class__.__name__.split('Float')[-1]
         )
 
-    def as_int(self):
+    def as_int(self) -> int:
         return int(self.real)
 
-    def as_float(self):
+    def as_float(self) -> float:
         return self.real
 
 
@@ -561,19 +568,19 @@ class Size(object):
                 continue
             return getattr(self, unit)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return "<Size(%s)>" % self._get_best_format()
 
-    def __str__(self):
+    def __str__(self) -> str:
         return "%s" % self._get_best_format()
 
-    def __format__(self, spec):
+    def __format__(self, spec: str) -> str:
         return str(self._get_best_format()).__format__(spec)
 
-    def __int__(self):
+    def __int__(self) -> int:
         return int(self._b)
 
-    def __float__(self):
+    def __float__(self) -> float:
         return self._b
 
     def __lt__(self, other):
@@ -648,7 +655,7 @@ class Size(object):
     def __nonzero__(self):
         return self.__bool__()
 
-    def __getattr__(self, unit):
+    def __getattr__(self, unit: str) -> str:
         """
         Calculate units on the fly, relies on the fact that ``bytes`` has been
         converted at instantiation. Units that don't exist will trigger an
@@ -734,7 +741,7 @@ def get_partitions_facts(sys_block_path):
     return partition_metadata
 
 
-def is_mapper_device(device_name):
+def is_mapper_device(device_name: str) -> bool:
     return device_name.startswith(('/dev/mapper', '/dev/dm-'))
 
 
@@ -806,7 +813,7 @@ def get_partitions(_sys_dev_block_path: str ='/sys/dev/block') -> Dict[str, str]
         result[partition_sys_name] = parent_device_sys_name
     return result
 
-def get_devices(_sys_block_path='/sys/block', device=''):
+async def get_devices(_sys_block_path: str = '/sys/block', device: str = '') -> Dict[str, Any]:
     """
     Captures all available block devices as reported by lsblk.
     Additional interesting metadata like sectors, size, vendor,
@@ -843,7 +850,7 @@ def get_devices(_sys_block_path='/sys/block', device=''):
 
         # If the mapper device is a logical volume it gets excluded
         if is_mapper_device(diskname):
-            if lvm.get_device_lvs(diskname):
+            if await lvm.get_device_lvs(diskname):
                 continue
 
         # all facts that have no defaults
@@ -907,13 +914,13 @@ def get_devices(_sys_block_path='/sys/block', device=''):
         metadata['parent'] = block[3]
 
         # some facts from udevadm
-        p = udevadm_property(sysdir)
+        p = await udevadm_property(sysdir)
         metadata['id_bus'] = p.get('ID_BUS', '')
 
         device_facts[diskname] = metadata
     return device_facts
 
-def has_bluestore_label(device_path):
+def has_bluestore_label(device_path: str) -> bool:
     isBluestore = False
     bluestoreDiskSignature = 'bluestore block device' # 22 bytes long
 
@@ -952,11 +959,11 @@ def get_lvm_mappers(sys_block_path: str = '/sys/block') -> List[str]:
         name_path: str = os.path.join(path, 'name')
 
         if os.path.exists(uuid_path):
-            with open(uuid_path, 'r') as f:
+            with open(uuid_path, 'r', encoding='utf-8') as f:
                 mapper_type: str = f.read().split('-')[0]
 
             if mapper_type == 'LVM':
-                with open(name_path, 'r') as f:
+                with open(name_path, 'r', encoding='utf-8') as f:
                     name: str = f.read()
                     result.append(f'/dev/mapper/{name.strip()}')
                     result.append(f'/dev/{device}')
@@ -1017,7 +1024,7 @@ def _dd_write(device: str, data: Union[str, bytes], skip: int = 0) -> None:
         logger.error(f"An error occurred while writing to {device}: {e}")
         raise
 
-def get_bluestore_header(device: str) -> Dict[str, Any]:
+async def get_bluestore_header(device: str) -> Dict[str, Any]:
     """Retrieve BlueStore header information from a given device.
 
     This function retrieves BlueStore header information from the specified 'device'.
@@ -1035,9 +1042,11 @@ def get_bluestore_header(device: str) -> Dict[str, Any]:
     data: Dict[str, Any] = {}
 
     if os.path.exists(device):
-        out, err, rc = process.call([
-            'ceph-bluestore-tool', 'show-label',
-            '--dev', device], verbose_on_failure=False)
+        out, err, rc = await process.call(
+            [
+                'ceph-bluestore-tool', 'show-label',
+                '--dev', device
+            ], verbose_on_failure=False)
         if rc:
             logger.debug(f'device {device} is not BlueStore; ceph-bluestore-tool failed to get info from device: {out}\n{err}')
         else:
@@ -1404,6 +1413,15 @@ class UdevData:
                 self.queue = data
             if data_type == 'V':
                 self.version = data
+
+    @property
+    def is_mpath(self) -> bool:
+        """Check if the device is a multipath device.
+
+        Returns:
+            bool: True if the device is a multipath device, otherwise False.
+        """
+        return self.environment.get('DM_UUID', '').startswith('mpath')
 
     @property
     def is_dm(self) -> bool:

@@ -62,14 +62,14 @@ def pretty_report(report: typing.Dict[str, typing.Any]) -> None:
     print(''.join(output))
 
 
-def direct_report() -> typing.Dict[str, typing.Any]:
+async def direct_report() -> typing.Dict[str, typing.Any]:
     """
     Other non-cli consumers of listing information will want to consume the
     report without the need to parse arguments or other flags. This helper
     bypasses the need to deal with the class interface which is meant for cli
     handling.
     """
-    return List([]).full_report()
+    return await List([]).full_report()
 
 
 # TODO: Perhaps, get rid of this class and simplify this module further?
@@ -81,9 +81,9 @@ class List:
         self.argv = argv
 
     @decorators.needs_root
-    def list(self, args: argparse.Namespace) -> None:
-        report = self.single_report(args.device) if args.device else \
-                 self.full_report()
+    async def list(self, args: argparse.Namespace) -> None:
+        report = await self.single_report(args.device) if args.device else \
+                 await self.full_report()
         if args.format == 'json':
             # If the report is empty, we don't return a non-zero exit status
             # because it is assumed this is going to be consumed by automated
@@ -96,14 +96,14 @@ class List:
                 raise SystemExit('No valid Ceph lvm devices found')
             pretty_report(report)
 
-    def create_report(self, lvs: typing.List[api.Volume]) -> typing.Dict[str, typing.Any]:
+    async def create_report(self, lvs: typing.List[api.Volume]) -> typing.Dict[str, typing.Any]:
         """
         Create a report for LVM dev(s) passed. Returns '{}' to denote failure.
         """
 
         report: typing.Dict[str, typing.Any] = {}
 
-        pvs = api.get_pvs()
+        pvs = await api.get_pvs()
 
         for lv in lvs:
             if not api.is_ceph_device(lv):
@@ -136,13 +136,13 @@ class List:
                               'path': dev}
         return report
 
-    def full_report(self) -> typing.Dict[str, typing.Any]:
+    async def full_report(self) -> typing.Dict[str, typing.Any]:
         """
         Create a report of all Ceph LVs. Returns '{}' to denote failure.
         """
-        return self.create_report(api.get_lvs())
+        return await self.create_report(await api.get_lvs())
 
-    def single_report(self, osd: str) -> typing.Dict[str, typing.Any]:
+    async def single_report(self, osd: str) -> typing.Dict[str, typing.Any]:
         """
         Generate a report for a single device. This can be either a logical
         volume in the form of vg/lv, a device with an absolute path like
@@ -151,24 +151,24 @@ class List:
         Return value '{}' denotes failure.
         """
         if osd.isdigit():
-            lv = api.get_lvs_from_osd_id(osd)
+            lv = await api.get_lvs_from_osd_id(osd)
         elif osd[0] == '/':
-            lv = api.get_lvs_from_path(osd)
+            lv = await api.get_lvs_from_path(osd)
         else:
             vg_name, lv_name = osd.split('/')
-            _lv = api.get_single_lv(filters={'lv_name': lv_name,
+            _lv = await api.get_single_lv(filters={'lv_name': lv_name,
                                              'vg_name': vg_name})
             if _lv is not None:
                 lv = [_lv]
             else:
                 raise RuntimeError(f'Unexpected error while reporting {osd}')
 
-        report = self.create_report(lv)
+        report = await self.create_report(lv)
 
         if not report:
             # check if device is a non-lvm journals or wal/db
             for dev_type in ['journal', 'wal', 'db']:
-                lvs = api.get_lvs(tags={
+                lvs = await api.get_lvs(tags={
                     'ceph.{}_device'.format(dev_type): osd})
                 if lvs:
                     # just taking the first lv here should work

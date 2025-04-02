@@ -19,7 +19,7 @@ class Prepare(object):
         self.args = args
         self.osd_id = None
 
-    def main(self) -> None:
+    async def main(self) -> None:
         sub_command_help = dedent("""
         Prepare an OSD by assigning an ID and FSID, registering them with the
         cluster with an ID and FSID, formatting and mounting the volume, and
@@ -60,6 +60,6 @@ class Prepare(object):
             self.args.objectstore = 'bluestore'
         self.objectstore = objectstore.mapping['LVM'][self.args.objectstore](args=self.args)
         if self.objectstore is not None:
-            self.objectstore.safe_prepare()
+            await self.objectstore.safe_prepare()
         else:
             raise RuntimeError('Unexpected error while setting objectore backend.')

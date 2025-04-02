@@ -9,12 +9,12 @@ from ceph_volume.util.device import Device
 from .prepare import write_keyring
 from .disk import lsblk, device_family, get_part_entry_type, _dd_read
 from packaging import version
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 mlogger = terminal.MultiLogger(__name__)
 
-def set_dmcrypt_no_workqueue(target_version: str = '2.3.4') -> None:
+async def set_dmcrypt_no_workqueue(target_version: str = '2.3.4') -> None:
     """Set `conf.dmcrypt_no_workqueue` to `True` if the installed version
     of `cryptsetup` is greater than or equal to the specified `target_version`.
 
@@ -39,7 +39,7 @@ def set_dmcrypt_no_workqueue(target_version: str = '2.3.4') -> None:
         RuntimeError: If failed to compare the cryptsetup version with the target version.
     """
     command = ["cryptsetup", "--version"]
-    out, err, rc = process.call(command)
+    out, err, rc = await process.call(command)
 
     # This regex extracts the version number from
     # the `cryptsetup --version` output
@@ -93,7 +93,7 @@ def create_dmcrypt_key() -> str:
     return key
 
 
-def luks_format(key: str, device: str) -> None:
+async def luks_format(key: str, device: str) -> None:
     """
     Decrypt (open) an encrypted device, previously prepared with cryptsetup
 
@@ -110,10 +110,10 @@ def luks_format(key: str, device: str) -> None:
         'luksFormat',
         device,
     ]
-    process.call(command, stdin=key, terminal_verbose=True, show_command=True)
+    await process.call(command, stdin=key, terminal_verbose=True, show_command=True)
 
 
-def plain_open(key, device, mapping):
+async def plain_open(key: str, device: str, mapping: str) -> None:
     """
     Decrypt (open) an encrypted device, previously prepared with cryptsetup in plain mode
 
@@ -139,10 +139,10 @@ def plain_open(key, device, mapping):
         command.extend(['--perf-no_read_workqueue',
                         '--perf-no_write_workqueue'])
 
-    process.call(command, stdin=key, terminal_verbose=True, show_command=True)
+    await process.call(command, stdin=key, terminal_verbose=True, show_command=True)
 
 
-def luks_close(mapping: str) -> None:
+async def luks_close(mapping: str) -> None:
     """Close a LUKS2 mapper device.
 
     Args:
@@ -152,12 +152,12 @@ def luks_close(mapping: str) -> None:
                           'luksClose',
                           mapping]
 
-    process.call(command,
-                 terminal_verbose=True,
-                 show_command=True)
+    await process.call(command,
+                       terminal_verbose=True,
+                       show_command=True)
 
 
-def rename_mapper(current: str, new: str) -> None:
+async def rename_mapper(current: str, new: str) -> None:
     """Rename a mapper
 
     Args:
@@ -172,17 +172,17 @@ def rename_mapper(current: str, new: str) -> None:
         new
     ]
 
-    _, err, rc = process.call(command,
-                              terminal_verbose=True,
-                              show_command=True)
+    _, err, rc = await process.call(command,
+                                    terminal_verbose=True,
+                                    show_command=True)
     if rc:
         raise RuntimeError(f"Can't rename mapper '{current}' to '{new}': {err}")
 
 
-def luks_open(key: str,
-              device: str,
-              mapping: str,
-              with_tpm: int = 0) -> None:
+async def luks_open(key: str,
+                    device: str,
+                    mapping: str,
+                    with_tpm: int = 0) -> None:
     """
     Decrypt (open) an encrypted device, previously prepared with cryptsetup
 
@@ -220,14 +220,14 @@ def luks_open(key: str,
             command.extend(['--perf-no_read_workqueue',
                             '--perf-no_write_workqueue'])
 
-    process.call(command,
-                 run_on_host=with_tpm,
-                 stdin=key,
-                 terminal_verbose=True,
-                 show_command=True)
+    await process.call(command,
+                       run_on_host=with_tpm,
+                       stdin=key,
+                       terminal_verbose=True,
+                       show_command=True)
 
 
-def dmcrypt_close(mapping, skip_path_check=False):
+async def dmcrypt_close(mapping: str, skip_path_check: bool = False) -> None:
     """
     Encrypt (close) a device, previously decrypted with cryptsetup
 
@@ -239,9 +239,9 @@ def dmcrypt_close(mapping, skip_path_check=False):
         logger.debug('will skip cryptsetup removal')
         return
     # don't be strict about the remove call, but still warn on the terminal if it fails
-    process.run(['cryptsetup', 'remove', mapping], stop_on_error=False)
+    await process.run(['cryptsetup', 'remove', mapping], stop_on_error=False)
 
-def get_dmcrypt_key(osd_id, osd_fsid, lockbox_keyring=None):
+async def get_dmcrypt_key(osd_id: str, osd_fsid: str, lockbox_keyring: Optional[str] = None) -> str:
     """
     Retrieve the dmcrypt (secret) key stored initially on the monitor. The key
     is sent initially with JSON, and the Monitor then mangles the name to
@@ -258,7 +258,7 @@ def get_dmcrypt_key(osd_id, osd_fsid, lockbox_keyring=None):
     config_key = 'dm-crypt/osd/%s/luks' % osd_fsid
 
     mlogger.info(f'Running ceph config-key get {config_key}')
-    stdout, stderr, returncode = process.call(
+    stdout, _, returncode = await process.call(
         [
             'ceph',
             '--cluster', conf.cluster,
@@ -276,7 +276,7 @@ def get_dmcrypt_key(osd_id, osd_fsid, lockbox_keyring=None):
     return ' '.join(stdout).strip()
 
 
-def write_lockbox_keyring(osd_id, osd_fsid, secret):
+async def write_lockbox_keyring(osd_id: str, osd_fsid: str, secret: str) -> None:
     """
     Helper to write the lockbox keyring. This is needed because the bluestore OSD will
     not persist the keyring.
@@ -289,7 +289,7 @@ def write_lockbox_keyring(osd_id, osd_fsid, secret):
         return
 
     name = 'client.osd-lockbox.%s' % osd_fsid
-    write_keyring(
+    await write_keyring(
         osd_id,
         secret,
         keyring_name='lockbox.keyring',
@@ -297,7 +297,7 @@ def write_lockbox_keyring(osd_id, osd_fsid, secret):
     )
 
 
-def status(device):
+async def status(device: str) -> Dict[str, Any]:
     """
     Capture the metadata information of a possibly encrypted device, returning
     a dictionary with all the values found (if any).
@@ -324,7 +324,7 @@ def status(device):
         'status',
         device,
     ]
-    out, err, code = process.call(command, show_command=True, verbose_on_failure=False)
+    out, _, code = await process.call(command, show_command=True, verbose_on_failure=False)
 
     metadata = {}
     if code != 0:
@@ -342,7 +342,7 @@ def status(device):
     return metadata
 
 
-def legacy_encrypted(device):
+async def legacy_encrypted(device: str) -> Dict[str, Any]:
     """
     Detect if a device was encrypted with ceph-disk or not. In the case of
     encrypted devices, include the type of encryption (LUKS, or PLAIN), and
@@ -350,7 +350,7 @@ def legacy_encrypted(device):
 
     This function assumes that ``device`` will be a partition.
     """
-    disk_meta = {}
+    disk_meta: Dict[str, Any] = {}
     if os.path.isdir(device):
         mounts = system.Mounts(paths=True).get_mounts()
         # yes, rebind the device variable here because a directory isn't going
@@ -360,7 +360,7 @@ def legacy_encrypted(device):
             raise RuntimeError('unable to determine the device mounted at %s' % device)
     metadata = {'encrypted': False, 'type': None, 'lockbox': '', 'device': device}
     # check if the device is online/decrypted first
-    active_mapper = status(device)
+    active_mapper = await status(device)
     if active_mapper:
         # normalize a bit to ensure same values regardless of source
         metadata['type'] = active_mapper['type'].lower().strip('12')  # turn LUKS1 or LUKS2 into luks
@@ -383,12 +383,12 @@ def legacy_encrypted(device):
     # associated devices and *then* look for one that has the 'lockbox' label
     # on it. Thanks for being awesome ceph-disk
     if not device == 'tmpfs':
-        disk_meta = lsblk(device, abspath=True)
+        disk_meta = await lsblk(device, abspath=True)
     if not disk_meta:
         return metadata
     parent_device = disk_meta['PKNAME']
     # With the parent device set, we can now look for the lockbox listing associated devices
-    devices = [Device(i['NAME']) for i in device_family(parent_device)]
+    devices = [Device(i['NAME']) for i in await device_family(parent_device)]
     for d in devices:
         if d.ceph_disk.type == 'lockbox':
             metadata['lockbox'] = d.path
@@ -446,7 +446,7 @@ class CephLuks2:
             pass
         return result
 
-    def config_luks2(self, config: Dict[str, str]) -> None:
+    async def config_luks2(self, config: Dict[str, str]) -> None:
         """Set the subsystem of a LUKS2 device
 
         Args:
@@ -466,7 +466,7 @@ class CephLuks2:
                               self.device]
         for k, v in config.items():
                 command.extend([f'--{k}', v])
-        _, err, rc = process.call(command, verbose_on_failure=False)
+        _, err, rc = await process.call(command, verbose_on_failure=False)
         if rc:
             raise RuntimeError(f"Can't set luks2 config to {self.device}:\n{err}")
 

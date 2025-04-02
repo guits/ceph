@@ -28,8 +28,8 @@ class Raw(object):
     def print_help(self, sub_help):
         return self._help.format(sub_help=sub_help)
 
-    def main(self):
-        terminal.dispatch(self.mapper, self.argv)
+    async def main(self):
+        await terminal.dispatch(self.mapper, self.argv)
         parser = argparse.ArgumentParser(
             prog='ceph-volume raw',
             formatter_class=argparse.RawDescriptionHelpFormatter,

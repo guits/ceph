@@ -19,7 +19,7 @@ class Activate(object):
         self.argv = argv
         self.args = args
 
-    def main(self) -> None:
+    async def main(self) -> None:
         sub_command_help = dedent("""
         Activate OSDs by discovering them with LVM and mounting them in their
         appropriate destination:
@@ -100,9 +100,9 @@ class Activate(object):
         self.objectstore = objectstore.mapping['LVM'][self.args.objectstore](args=self.args)
         if self.objectstore is not None:
             if self.args.activate_all:
-                self.objectstore.activate_all()
+                await self.objectstore.activate_all()
             else:
-                self.objectstore.activate()
+                await self.objectstore.activate()
         else:
             mlogger.error('Unexpected error while setting objectstore backend.')
             return

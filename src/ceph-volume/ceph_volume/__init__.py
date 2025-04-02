@@ -1,10 +1,14 @@
 import os
 import logging
 from collections import namedtuple
+from typing import Any, Dict
 
+class SysInfo:
+    def __init__(self) -> None:
+        self.devices: Dict[str, Any] = {}
 
-sys_info = namedtuple('sys_info', ['devices'])
-sys_info.devices = dict()
+sys_info = SysInfo()
+
 logger = logging.getLogger(__name__)
 BEING_REPLACED_HEADER: str = 'CEPH_DEVICE_BEING_REPLACED'
 

@@ -17,24 +17,24 @@ logger = logging.getLogger(__name__)
 mlogger = terminal.MultiLogger(__name__)
 
 
-def zap_device(path: str) -> None:
+async def zap_device(path: str) -> None:
     """Remove any existing filesystem signatures.
 
     Args:
         path (str): The path to the device to zap.
     """
-    zap_bluestore(path)
-    wipefs(path)
-    zap_data(path)
+    await zap_bluestore(path)
+    await wipefs(path)
+    await zap_data(path)
 
-def zap_bluestore(path: str) -> None:
+async def zap_bluestore(path: str) -> None:
     """Remove all BlueStore signature on a device.
 
     Args:
         path (str): The path to the device to remove BlueStore signatures from.
     """
     terminal.info(f'Removing all BlueStore signature on {path} if any...')
-    process.run([
+    await process.run([
         'ceph-bluestore-tool',
         'zap-device',
         '--dev',
@@ -42,7 +42,7 @@ def zap_bluestore(path: str) -> None:
         '--yes-i-really-really-mean-it'
     ])
 
-def wipefs(path: str) -> None:
+async def wipefs(path: str) -> None:
     """
     Removes the filesystem from an lv or partition.
 
@@ -56,11 +56,13 @@ def wipefs(path: str) -> None:
     interval = str_to_int(os.environ.get('CEPH_VOLUME_WIPEFS_INTERVAL', 5))
 
     for attempt in range(1, tries):
-        _, _, exit_code = process.call([
-            'wipefs',
-            '--all',
-            path
-        ])
+        _, _, exit_code = await process.call(
+            [
+                'wipefs',
+                '--all',
+                path
+            ]
+        )
         if not exit_code:
             return
         # this could narrow the retry by poking in the stderr of the output
@@ -74,7 +76,7 @@ def wipefs(path: str) -> None:
     raise RuntimeError("could not complete wipefs on device: %s" % path)
 
 
-def zap_data(path: str) -> None:
+async def zap_data(path: str) -> None:
     """
     Clears all data from the given path. Path should be
     an absolute path to an lv or partition.
@@ -82,7 +84,7 @@ def zap_data(path: str) -> None:
     10M of data is written to the path to make sure that
     there is no trace left of any previous Filesystem.
     """
-    process.run([
+    await process.run([
         'dd',
         'if=/dev/zero',
         'of={path}'.format(path=path),
@@ -121,7 +123,7 @@ class Zap:
 
         return list(raw_devices)
 
-    def find_associated_devices(self) -> List[Device]:
+    async def find_associated_devices(self) -> List[Device]:
         """From an ``osd_id`` and/or an ``osd_fsid``, filter out all the Logical Volumes (LVs) in the
         system that match those tag values, further detect if any partitions are
         part of the OSD, and then return the set of LVs and partitions (if any).
@@ -146,10 +148,10 @@ class Zap:
             'ceph.osd_fsid': self.args.osd_fsid
         }.items() if value}
         devices_to_zap: List[str] = []
-        lvs = api.get_lvs(tags=lv_tags)
+        lvs = await api.get_lvs(tags=lv_tags)
 
         if lvs:
-            devices_to_zap = self.ensure_associated_lvs(lvs, lv_tags)
+            devices_to_zap = await self.ensure_associated_lvs(lvs, lv_tags)
         else:
             mlogger.debug(f'No OSD identified by "{self.args.osd_id or self.args.osd_fsid}" was found among LVM-based OSDs.')
             mlogger.debug('Proceeding to check RAW-based OSDs.')
@@ -161,7 +163,7 @@ class Zap:
 
         return [Device(path) for path in set(devices_to_zap) if path]
 
-    def ensure_associated_lvs(self,
+    async def ensure_associated_lvs(self,
                               lvs: List[api.Volume],
                               lv_tags: Dict[str, Any] = {}) -> List[str]:
         """
@@ -187,7 +189,7 @@ class Zap:
             # with the same ID can be caught
             for ceph_lvs, _type in backing_devices:
                 if ceph_lvs:
-                    verified_devices.extend([l.lv_path for l in ceph_lvs])
+                    verified_devices.extend([l.lv_path for l in await ceph_lvs])
                     continue
 
                 # must be a disk partition, by querying blkid by the uuid we are
@@ -199,7 +201,7 @@ class Zap:
                     # will not not have ceph.db_uuid
                     continue
 
-                osd_device = disk.get_device_from_partuuid(device_uuid)
+                osd_device = await disk.get_device_from_partuuid(device_uuid)
                 if not osd_device:
                     # if the osd_device is not found by the partuuid, then it is
                     # not possible to ensure this device exists anymore, so skip it
@@ -211,7 +213,7 @@ class Zap:
         # reduce the list from all the duplicates that were added
         return list(set(verified_devices))
 
-    def unmount_lv(self, lv: api.Volume) -> None:
+    async def unmount_lv(self, lv: api.Volume) -> None:
         if lv.tags.get('ceph.cluster_name') and lv.tags.get('ceph.osd_id'):
             lv_path = "/var/lib/ceph/osd/{}-{}".format(lv.tags['ceph.cluster_name'], lv.tags['ceph.osd_id'])
         else:
@@ -220,9 +222,9 @@ class Zap:
         dmcrypt = lv.encrypted
         if system.path_is_mounted(lv_path):
             mlogger.info("Unmounting %s", lv_path)
-            system.unmount(lv_path)
+            await system.unmount(lv_path)
         if dmcrypt and dmcrypt_uuid:
-            self.dmcrypt_close(dmcrypt_uuid)
+            await self.dmcrypt_close(dmcrypt_uuid)
 
     def _write_replacement_header(self, device: str) -> None:
         """Write a replacement header to a device.
@@ -273,7 +275,7 @@ class Zap:
         disk._dd_write(device,
                        b'\x00' * len(BEING_REPLACED_HEADER))
 
-    def zap_lv(self, device: Device) -> None:
+    async def zap_lv(self, device: Device) -> None:
         """
         Device examples: vg-name/lv-name, /dev/vg-name/lv-name
         Requirements: Must be a logical volume (LV)
@@ -282,19 +284,19 @@ class Zap:
             lv: api.Volume = device.lv_api
         else:
             raise RuntimeError(f"Unexpected error while attempting to zap LV device {device}.")
-        self.unmount_lv(lv)
+        await self.unmount_lv(lv)
         self.parent_device: str = disk.get_parent_device_from_mapper(lv.lv_path)
-        zap_device(device.path)
+        await zap_device(device.path)
 
         if self.args.destroy:
-            lvs = api.get_lvs(filters={'vg_name': device.vg_name})
+            lvs = await api.get_lvs(filters={'vg_name': device.vg_name})
             if len(lvs) <= 1:
                 mlogger.info('Only 1 LV left in VG, will proceed to destroy '
                              'volume group %s', device.vg_name)
-                pvs = api.get_pvs(filters={'lv_uuid': lv.lv_uuid})
-                api.remove_vg(device.vg_name)
+                pvs = await api.get_pvs(filters={'lv_uuid': lv.lv_uuid})
+                await api.remove_vg(device.vg_name)
                 for pv in pvs:
-                    api.remove_pv(pv.pv_name)
+                    await api.remove_pv(pv.pv_name)
                 replacement_args: Dict[str, bool] = {
                     'block': self.args.replace_block,
                     'db': self.args.replace_db,
@@ -310,12 +312,12 @@ class Zap:
                              device.path)
                 if self.args.replace_block:
                     mlogger.info(f'--replace-block passed but the device still has {str(len(lvs))} LV(s)')
-                api.remove_lv(device.path)
+                await api.remove_lv(device.path)
         elif lv:
             # just remove all lvm metadata, leaving the LV around
-            lv.clear_tags()
+            await lv.clear_tags()
 
-    def zap_partition(self, device: Device) -> None:
+    async def zap_partition(self, device: Device) -> None:
         """
         Device example: /dev/sda1
         Requirements: Must be a partition
@@ -331,19 +333,19 @@ class Zap:
             for mapper_uuid in os.listdir('/dev/mapper'):
                 mapper_path = os.path.join('/dev/mapper', mapper_uuid)
                 if os.path.realpath(mapper_path) in holders:
-                    self.dmcrypt_close(mapper_uuid)
+                    await self.dmcrypt_close(mapper_uuid)
 
         if system.device_is_mounted(device.path):
             mlogger.info("Unmounting %s", device.path)
-            system.unmount(device.path)
+            await system.unmount(device.path)
 
-        zap_device(device.path)
+        await zap_device(device.path)
 
         if self.args.destroy:
             mlogger.info("Destroying partition since --destroy was used: %s" % device.path)
-            disk.remove_partition(device)
+            await disk.remove_partition(device)
 
-    def zap_lvm_member(self, device: Device) -> None:
+    async def zap_lvm_member(self, device: Device) -> None:
         """
         An LVM member may have more than one LV and or VG, for example if it is
         a raw device with multiple partitions each belonging to a different LV
@@ -354,16 +356,16 @@ class Zap:
         for lv in device.lvs:
             if lv.lv_name:
                 mlogger.info('Zapping lvm member {}. lv_path is {}'.format(device.path, lv.lv_path))
-                self.zap_lv(Device(lv.lv_path))
+                await self.zap_lv(Device(lv.lv_path))
             else:
-                vg = api.get_single_vg(filters={'vg_name': lv.vg_name})
+                vg = await api.get_single_vg(filters={'vg_name': lv.vg_name})
                 if vg:
                     mlogger.info('Found empty VG {}, removing'.format(vg.vg_name))
-                    api.remove_vg(vg.vg_name)
+                    await api.remove_vg(vg.vg_name)
 
 
 
-    def zap_raw_device(self, device: Device) -> None:
+    async def zap_raw_device(self, device: Device) -> None:
         """
         Any whole (raw) device passed in as input will be processed here,
         checking for LVM membership and partitions (if any).
@@ -380,16 +382,16 @@ class Zap:
 
         # look for partitions and zap those
         for part_name in device.sys_api.get('partitions', {}).keys():
-            self.zap_partition(Device('/dev/%s' % part_name))
+            await self.zap_partition(Device('/dev/%s' % part_name))
 
-        zap_device(device.path)
+        await zap_device(device.path)
         # TODO(guits): I leave this commented out, this should be part of a separate patch in order to
         # support device replacement with raw-based OSDs
         # if self.args.replace_block:
         #     disk._dd_write(device.path, 'CEPH_DEVICE_BEING_REPLACED')
 
     @decorators.needs_root
-    def zap(self) -> None:
+    async def zap(self) -> None:
         """Zap a device.
 
         Raises:
@@ -402,13 +404,13 @@ class Zap:
                 terminal.error("Refusing to zap the mapper device: {}".format(device))
                 raise SystemExit(1)
             if device.is_lvm_member:
-                self.zap_lvm_member(device)
+                await self.zap_lvm_member(device)
             if device.is_lv:
-                self.zap_lv(device)
+                await self.zap_lv(device)
             if device.is_partition:
-                self.zap_partition(device)
+                await self.zap_partition(device)
             if device.is_device:
-                self.zap_raw_device(device)
+                await self.zap_raw_device(device)
 
         if self.args.devices:
             terminal.success(
@@ -421,7 +423,7 @@ class Zap:
             )
 
     @decorators.needs_root
-    def zap_osd(self) -> None:
+    async def zap_osd(self) -> None:
         if self.args.osd_id and not self.args.no_systemd:
             osd_is_running = systemctl.osd_is_active(self.args.osd_id)
             if osd_is_running:
@@ -429,11 +431,11 @@ class Zap:
                 mlogger.error("systemctl stop ceph-osd@%s" % self.args.osd_id)
                 raise SystemExit("Unable to zap devices associated with OSD ID: %s" % self.args.osd_id)
         self.args.devices = self.find_associated_devices()
-        self.zap()
+        await self.zap()
 
-    def dmcrypt_close(self, dmcrypt_uuid: str) -> None:
+    async def dmcrypt_close(self, dmcrypt_uuid: str) -> None:
         mlogger.info("Closing encrypted volume %s", dmcrypt_uuid)
-        encryption.dmcrypt_close(mapping=dmcrypt_uuid, skip_path_check=True)
+        await encryption.dmcrypt_close(mapping=dmcrypt_uuid, skip_path_check=True)
 
     def main(self) -> None:
         sub_command_help = dedent("""

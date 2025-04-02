@@ -1,8 +1,18 @@
 from __future__ import print_function
+from typing import List, Optional
+import asyncio
 import argparse
 import os
 import sys
 import logging
+
+
+async def async_main() -> None:
+    instance = await Volume.create()
+    instance.main()
+
+def main() -> None:
+    asyncio.run(async_main())
 
 
 # `iter_entry_points` from `pkg_resources` takes one argument whereas
@@ -44,7 +54,7 @@ Ceph Conf: {ceph_path}
 {warning}
     """
 
-    def __init__(self, argv=None, parse=True):
+    def __init__(self, argv: Optional[List[str]] = None) -> None:
         self.mapper = {
             'lvm': devices.lvm.LVM,
             'simple': devices.simple.Simple,
@@ -54,12 +64,16 @@ Ceph Conf: {ceph_path}
             'drive-group': drive_group.Deploy,
         }
         self.plugin_help = "No plugins found/loaded"
-        if argv is None:
-            self.argv = sys.argv
-        else:
-            self.argv = argv
+        self.argv = argv if argv is not None else sys.argv
+
+    @classmethod
+    async def create(cls, argv: Optional[List[str]] = None, parse: bool = True) -> "Volume":
+        instance = cls(argv)
+
         if parse:
-            self.main(self.argv)
+            await instance.main(instance.argv)
+
+        return instance
 
     def help(self, warning=False):
         warning = 'See "ceph-volume --help" for full list of options.' if warning else ''
@@ -118,7 +132,7 @@ Ceph Conf: {ceph_path}
         return pruned_args[:slice_on_index], pruned_args[slice_on_index:]
 
     @catches()
-    def main(self, argv):
+    async def main(self, argv):
         # these need to be available for the help, which gets parsed super
         # early
         configuration.load_ceph_conf_path()
@@ -171,7 +185,7 @@ Ceph Conf: {ceph_path}
             logger.warning('ignoring inability to load ceph.conf', exc_info=1)
             terminal.yellow(error)
         # dispatch to sub-commands
-        terminal.dispatch(self.mapper, subcommand_args)
+        await terminal.dispatch(self.mapper, subcommand_args)
 
 
 def _load_library_extensions():

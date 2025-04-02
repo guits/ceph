@@ -27,7 +27,7 @@ class BlueStore(BaseObjectStore):
         self.db_device_path: str = ''
         self.block_lv: Optional[Volume] = None
 
-    def add_objectstore_opts(self) -> None:
+    async def add_objectstore_opts(self) -> None:
         """
         Create the files for the OSD to function. A normal call will look like:
 
@@ -46,13 +46,13 @@ class BlueStore(BaseObjectStore):
             self.osd_mkfs_cmd.extend(
                 ['--bluestore-block-wal-path', self.wal_device_path]
             )
-            system.chown(self.wal_device_path)
+            await system.chown(self.wal_device_path)
 
         if self.db_device_path:
             self.osd_mkfs_cmd.extend(
                 ['--bluestore-block-db-path', self.db_device_path]
             )
-            system.chown(self.db_device_path)
+            await system.chown(self.db_device_path)
 
         if self.get_osdspec_affinity():
             self.osd_mkfs_cmd.extend(['--osdspec-affinity',
@@ -65,7 +65,7 @@ class BlueStore(BaseObjectStore):
                 os.unlink(os.path.join(self.osd_path, link_name))
 
 
-    def add_label(self, key: str,
+    async def add_label(self, key: str,
                   value: str,
                   device: str) -> None:
         """Add a label to a BlueStore device.
@@ -86,14 +86,14 @@ class BlueStore(BaseObjectStore):
                               '--dev',
                               device]
 
-        _, err, rc = process.call(command,
-                                  terminal_verbose=True,
-                                  show_command=True)
+        _, err, rc = await process.call(command,
+                                        terminal_verbose=True,
+                                        show_command=True)
         if rc:
             raise RuntimeError(f"Can't add BlueStore label '{key}' to device {device}: {err}")
 
-    def osd_mkfs(self) -> None:
-        super().osd_mkfs()
+    async def osd_mkfs(self) -> None:
+        await super().osd_mkfs()
         mapping: Dict[str, Any] = {'raw': ['data', 'block_db', 'block_wal'],
                                    'lvm': ['ceph.block_device', 'ceph.db_device', 'ceph.wal_device']}
         if self.args.dmcrypt:
@@ -106,4 +106,4 @@ class BlueStore(BaseObjectStore):
                     else:
                         raise RuntimeError('Unexpected error while running bluestore mkfs.')
                 if path is not None:
-                    CephLuks2(path).config_luks2({'subsystem': f'ceph_fsid={self.osd_fsid}'})
+                    await CephLuks2(path).config_luks2({'subsystem': f'ceph_fsid={self.osd_fsid}'})

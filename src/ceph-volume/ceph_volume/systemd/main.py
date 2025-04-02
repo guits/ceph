@@ -9,6 +9,7 @@ import time
 import logging
 from ceph_volume import log, process
 from ceph_volume.exceptions import SuffixParsingError
+from typing import List, Optional
 
 
 def parse_subcommand(string):
@@ -50,7 +51,7 @@ def parse_osd_uuid(string):
     return osd_uuid
 
 
-def main(args=None):
+async def main(args: Optional[List[str]] = None) -> None:
     """
     Main entry point for the ``ceph-volume-systemd`` executable. ``args`` are
     optional for easier testing of arguments.
@@ -98,7 +99,7 @@ def main(args=None):
         try:
             # don't log any output to the terminal, just rely on stderr/stdout
             # going to logging
-            process.run(command, terminal_logging=False)
+            await process.run(command, terminal_logging=False)
             logger.info('successfully triggered activation for: %s', extra_data)
             break
         except RuntimeError as error:

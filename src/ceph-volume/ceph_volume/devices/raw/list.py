@@ -1,4 +1,7 @@
+# type: ignore
+# pylint: disable=all
 from __future__ import print_function
+import asyncio
 import argparse
 import json
 import logging
@@ -22,13 +25,13 @@ def direct_report(devices: Optional[_List[str]] = None) -> Dict[str, Any]:
     _list = List([])
     return _list.generate(devices)
 
-def _get_bluestore_info(devices: _List[str]) -> Dict[str, Any]:
+async def _get_bluestore_info(devices: _List[str]) -> Dict[str, Any]:
     result: Dict[str, Any] = {}
     command: _List[str] = ['ceph-bluestore-tool',
                            'show-label', '--bdev_aio_poll_ms=1']
     for device in devices:
         command.extend(['--dev', device])
-    out, err, rc = process.call(command, verbose_on_failure=False)
+    out, err, rc = await process.call(command, verbose_on_failure=False)
     if rc:
         logger.debug(f"ceph-bluestore-tool couldn't detect any BlueStore device.\n{out}\n{err}")
     else:
@@ -75,23 +78,24 @@ class List(object):
             result.append(path)
         self.devices_to_scan = result
 
-    def exclude_lvm_osd_devices(self) -> None:
-        with ThreadPoolExecutor() as pool:
-            filtered_devices_to_scan = pool.map(self.filter_lvm_osd_devices, self.devices_to_scan)
-            self.devices_to_scan = [device for device in filtered_devices_to_scan if device is not None]
+    async def exclude_lvm_osd_devices(self) -> None:
+        filtered_devices_to_scan = await asyncio.gather(
+            *(self.filter_lvm_osd_devices(device) for device in self.devices_to_scan)
+        )
+        self.devices_to_scan = [device for device in filtered_devices_to_scan if device is not None]
 
-    def filter_lvm_osd_devices(self, device: str) -> Optional[str]:
-        d = Device(device)
+    async def filter_lvm_osd_devices(self, device: str) -> Optional[str]:
+        d = await Device.create(device, lsblk_all=self.info_devices)
         return d.path if not d.ceph_device_lvm else None
 
-    def generate(self, devices: Optional[_List[str]] = None) -> Dict[str, Any]:
+    async def generate(self, devices: Optional[_List[str]] = None) -> Dict[str, Any]:
         logger.debug('Listing block devices via lsblk...')
         if not devices or not any(devices):
             # If no devs are given initially, we want to list ALL devices including children and
             # parents. Parent disks with child partitions may be the appropriate device to return if
             # the parent disk has a bluestore header, but children may be the most appropriate
             # devices to return if the parent disk does not have a bluestore header.
-            self.info_devices = disk.lsblk_all(abspath=True)
+            self.info_devices = await disk.lsblk_all(abspath=True)
             # Linux kernels built with CONFIG_ATARI_PARTITION enabled can falsely interpret
             # bluestore's on-disk format as an Atari partition table. These false Atari partitions
             # can be interpreted as real OSDs if a bluestore OSD was previously created on the false
@@ -102,20 +106,20 @@ class List(object):
             # determine whether a parent is bluestore, we should err on the side of not reporting
             # the child so as not to give a false negative.
             self.exclude_atari_partitions()
-            self.exclude_lvm_osd_devices()
+            await self.exclude_lvm_osd_devices()
 
         else:
             self.devices_to_scan = devices
 
         result: Dict[str, Any] = {}
         logger.debug('inspecting devices: {}'.format(self.devices_to_scan))
-        result = _get_bluestore_info(self.devices_to_scan)
+        result = await _get_bluestore_info(self.devices_to_scan)
 
         return result
 
     @decorators.needs_root
-    def list(self, args: argparse.Namespace) -> None:
-        report = self.generate(args.device)
+    async def list(self, args: argparse.Namespace) -> None:
+        report = await self.generate(args.device)
         if args.format == 'json':
             print(json.dumps(report, indent=4, sort_keys=True))
         else:
@@ -123,7 +127,7 @@ class List(object):
                 raise SystemExit('No valid Ceph devices found')
             raise RuntimeError('not implemented yet')
 
-    def main(self) -> None:
+    async def main(self) -> None:
         sub_command_help = dedent("""
         List OSDs on raw devices with raw device labels (usually the first
         block of the device).
@@ -159,4 +163,4 @@ class List(object):
         )
 
         args = parser.parse_args(self.argv)
-        self.list(args)
+        await self.list(args)

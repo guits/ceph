@@ -1,10 +1,11 @@
+import asyncio
 from fcntl import fcntl, F_GETFL, F_SETFL
 from os import O_NONBLOCK, read, path
 import subprocess
-from select import select
 from ceph_volume import terminal
 from ceph_volume.util import as_bytes
 from ceph_volume.util.system import which, run_host_cmd, host_rootfs
+from typing import Any, List, Optional, Tuple
 
 import logging
 
@@ -95,7 +96,7 @@ def obfuscate(command_, on=None):
     return "Running command: %s" % ' '.join(command)
 
 
-def run(command, run_on_host=False, **kw):
+async def run(command: List[str], run_on_host: bool = False, **kw: Any) -> None:
     """
     A real-time-logging implementation of a remote subprocess.Popen call where
     a command is just executed on the remote end and no other handling is done.
@@ -115,30 +116,33 @@ def run(command, run_on_host=False, **kw):
     terminal.write(command_msg)
     terminal_logging = kw.pop('terminal_logging', True)
 
-    process = subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
         close_fds=True,
         **kw
     )
 
-    while True:
-        reads, _, _ = select(
-            [process.stdout.fileno(), process.stderr.fileno()],
-            [], []
-        )
-        log_descriptors(reads, process, terminal_logging)
+    async def log_stream(stream: Optional[asyncio.StreamReader]) -> None:
+        if stream is None:
+            return
 
-        if process.poll() is not None:
-            # ensure we do not have anything pending in stdout or stderr
-            log_descriptors(reads, process, terminal_logging)
+        while True:
+            line = await stream.readline()
+            if not line:
+                break
+            log_descriptors([line], process, terminal_logging)
 
-            break
+    await asyncio.gather(
+        log_stream(process.stdout),
+        log_stream(process.stderr)
+    )
 
-    returncode = process.wait()
+    returncode = await process.wait()
+
     if returncode != 0:
-        msg = "command returned non-zero exit status: %s" % returncode
+        msg = f"command returned non-zero exit status: {returncode}"
         if fail_msg:
             logger.warning(fail_msg)
             if terminal_logging:
@@ -151,7 +155,7 @@ def run(command, run_on_host=False, **kw):
             logger.warning(msg)
 
 
-def call(command, run_on_host=False, **kw):
+async def call(command: List[str], run_on_host: bool = False, **kw: Any) -> Tuple[List[str], List[str], int]:
     """
     Similar to ``subprocess.Popen`` with the following changes:
 
@@ -182,14 +186,14 @@ def call(command, run_on_host=False, **kw):
     logfile_verbose = kw.pop('logfile_verbose', True)
     verbose_on_failure = kw.pop('verbose_on_failure', True)
     show_command = kw.pop('show_command', False)
-    command_msg = "Running command: %s" % ' '.join(command)
+    command_msg = f"Running command: {' '.join(command)}"
     stdin = kw.pop('stdin', None)
     logger.info(command_msg)
     if show_command:
         terminal.write(command_msg)
 
-    process = subprocess.Popen(
-        command,
+    process = await asyncio.create_subprocess_exec(
+        *command,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         stdin=subprocess.PIPE,
@@ -198,17 +202,15 @@ def call(command, run_on_host=False, **kw):
     )
 
     if stdin:
-        stdout_stream, stderr_stream = process.communicate(as_bytes(stdin))
+        stdout_stream, stderr_stream = await process.communicate(as_bytes(stdin))
     else:
-        stdout_stream = process.stdout.read()
-        stderr_stream = process.stderr.read()
-    returncode = process.wait()
-    if not isinstance(stdout_stream, str):
-        stdout_stream = stdout_stream.decode('utf-8')
-    if not isinstance(stderr_stream, str):
-        stderr_stream = stderr_stream.decode('utf-8')
-    stdout = stdout_stream.splitlines()
-    stderr = stderr_stream.splitlines()
+        stdout_stream = await process.stdout.read() if process.stdout is not None else b''
+        stderr_stream = await process.stderr.read() if process.stderr is not None else b''
+    returncode = await process.wait()
+    stdout_stream_str = stdout_stream.decode('utf-8')
+    stderr_stream_str = stderr_stream.decode('utf-8')
+    stdout = stdout_stream_str.splitlines()
+    stderr = stderr_stream_str.splitlines()
 
     if returncode != 0:
         # set to true so that we can log the stderr/stdout that callers would

@@ -145,16 +145,16 @@ def mkdir_p(path, chown=True):
         os.chown(path, uid, gid)
 
 
-def chown(path, recursive=True):
+async def chown(path: str, recursive: bool = True) -> None:
     """
     ``chown`` a path to the ceph user (uid and guid fetched at runtime)
     """
     uid, gid = get_ceph_user_ids()
     if os.path.islink(path):
-        process.run(['chown', '-h', 'ceph:ceph', path])
+        await process.run(['chown', '-h', 'ceph:ceph', path])
         path = os.path.realpath(path)
     if recursive:
-        process.run(['chown', '-R', 'ceph:ceph', path])
+        await process.run(['chown', '-R', 'ceph:ceph', path])
     else:
         os.chown(path, uid, gid)
 
@@ -187,9 +187,9 @@ class tmp_mount(object):
         self.path = None
         self.encrypted = encrypted
 
-    def __enter__(self):
+    async def __enter__(self):
         self.path = tempfile.mkdtemp()
-        process.run([
+        await process.run([
             'mount',
             '-v',
             self.device,
@@ -197,8 +197,8 @@ class tmp_mount(object):
         ])
         return self.path
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        process.run([
+    async def __exit__(self, exc_type, exc_val, exc_tb):
+        await process.run([
             'umount',
             '-v',
             self.path
@@ -209,28 +209,30 @@ class tmp_mount(object):
             encryption.dmcrypt_close(self.device)
 
 
-def unmount_tmpfs(path):
+async def unmount_tmpfs(path: str) -> None:
     """
     Removes the mount at the given path iff the path is a tmpfs mount point.
     Otherwise no action is taken.
     """
-    _out, _err, rc = process.call(['findmnt', '-t', 'tmpfs', '-M', path])
+    _, _, rc = await process.call(['findmnt', '-t', 'tmpfs', '-M', path])
     if rc != 0:
         logger.info('{} does not appear to be a tmpfs mount'.format(path))
     else:
         logger.info('Unmounting tmpfs path at {}'.format( path))
-        unmount(path)
+        await unmount(path)
 
 
-def unmount(path):
+async def unmount(path: str) -> None:
     """
     Removes mounts at the given path
     """
-    process.run([
-        'umount',
-        '-v',
-        path,
-    ])
+    await process.run(
+        [
+            'umount',
+            '-v',
+            path,
+        ]
+    )
 
 
 def path_is_mounted(path, destination=None):
@@ -378,7 +380,7 @@ class Mounts(object):
             return paths_mounted
 
 
-def set_context(path, recursive=False):
+async def set_context(path: str, recursive: bool = False) -> None:
     """
     Calls ``restorecon`` to set the proper context on SELinux systems. Only if
     the ``restorecon`` executable is found anywhere in the path it will get
@@ -401,7 +403,7 @@ def set_context(path, recursive=False):
         return
 
     try:
-        stdout, stderr, code = process.call(['selinuxenabled'],
+        _, _, code = await process.call(['selinuxenabled'],
                                             verbose_on_failure=False)
     except FileNotFoundError:
         logger.info('No SELinux found, skipping call to restorecon')
@@ -414,6 +416,6 @@ def set_context(path, recursive=False):
     # restore selinux context to default policy values
     if which('restorecon').startswith('/'):
         if recursive:
-            process.run(['restorecon', '-R', path])
+            await process.run(['restorecon', '-R', path])
         else:
-            process.run(['restorecon', path])
+            await process.run(['restorecon', path])
