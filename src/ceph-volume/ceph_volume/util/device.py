@@ -37,14 +37,14 @@ class Devices(object):
                  with_lsm: bool = False,
                  list_all: bool = False) -> None:
         lvs = lvm.get_lvs()
-        lsblk_all = disk.lsblk_all()
+        lsblk = disk.lsblk_all()
         all_devices_vgs = lvm.get_all_devices_vgs()
         if not sys_info.devices:
             sys_info.devices = disk.get_devices()
         self._devices = [Device(k,
                                 with_lsm,
                                 lvs=lvs,
-                                lsblk_all=lsblk_all,
+                                lsblk=lsblk,
                                 all_devices_vgs=all_devices_vgs) for k in
                          sys_info.devices.keys()]
         self.devices = []
@@ -110,11 +110,14 @@ class Device(object):
     # unittests
     lvs: List[lvm.Volume] = []
 
+    # lsblk cache
+    _lsblk_cache: Optional[List[Dict[str, str]]] = None
+
     def __init__(self,
                  path: str,
                  with_lsm: bool = False,
                  lvs: Optional[List[lvm.Volume]] = None,
-                 lsblk_all: Optional[List[Dict[str, str]]] = None,
+                 lsblk: Optional[List[Dict[str, str]]] = None,
                  all_devices_vgs: Optional[List[lvm.VolumeGroup]] = None) -> None:
         self.path = path
         # LVs can have a vg/lv path, while disks will have /dev/sda
@@ -132,7 +135,7 @@ class Device(object):
         self.partitions = self._get_partitions()
         self.lv_api: Optional[lvm.Volume] = None
         self.lvs = [] if not lvs else lvs
-        self.lsblk_all = lsblk_all
+        self.lsblk = lsblk
         self.all_devices_vgs = all_devices_vgs if all_devices_vgs is not None else []
         self.vgs: List[lvm.VolumeGroup] = []
         self.vg_name = ''
@@ -155,6 +158,43 @@ class Device(object):
                                          self.rejected_reasons_raw))
 
         self.device_id = self._get_device_id()
+
+    @classmethod
+    def _get_lsblk(cls) -> List[Dict[str, str]]:
+        """
+        Retrieves and returns the list of block devices (lsblk) from the system.
+        The result is cached to avoid redundant calls to the `lsblk` command.
+
+        If the list is already cached, it returns the cached version. Otherwise, it calls
+        `disk.lsblk_all()` to fetch the block device information from the system and caches it
+        for future use.
+
+        This method is used internally by the class to fetch and cache `lsblk` data.
+
+        Returns:
+            List[Dict[str, str]]: A list of dictionaries, where each dictionary represents
+            a block device with keys like 'NAME', 'TYPE', 'FSTYPE', etc., depending on the
+            output of the `lsblk` command.
+        """
+        if cls._lsblk_cache is None:
+            cls._lsblk_cache = disk.lsblk_all()
+        return cls._lsblk_cache
+
+    def get_lsblk(self) -> List[Dict[str, str]]:
+        """
+        Returns the list of block devices (lsblk) associated with this instance.
+
+        If `self.lsblk_all` is provided (e.g., passed during initialization), it will return that list.
+        Otherwise, it will call the cached version of the block devices using the `_get_lsblk()` method.
+
+        This method gives priority to the `lsblk_all` passed during initialization. If it's not available,
+        it will fall back to the cached result or fetch the data if not cached.
+
+        Returns:
+            List[Dict[str, str]]: A list of dictionaries representing the block devices,
+            with keys like 'NAME', 'TYPE', 'FSTYPE', etc.
+        """
+        return self.lsblk or self._get_lsblk()
 
     def fetch_lsm(self, with_lsm: bool) -> Dict[str, Any]:
         '''
@@ -243,19 +283,20 @@ class Device(object):
             self.ceph_device_lvm = lvm.is_ceph_device(lv)
         else:
             self.lvs = []
-            if self.lsblk_all:
-                for dev in self.lsblk_all:
-                    if dev['NAME'] == os.path.basename(self.path):
-                        break
-            else:
-                dev = disk.lsblk(self.path)
+            for dev in self.get_lsblk():
+                if dev.get('NAME') == os.path.basename(self.path):
+                    break
+            if not dev:
+                # In theory, it is impossible to reach this.
+                raise RuntimeError(f'Unexpected error, {self.path} not found.')
             self.disk_api = dev
             device_type = dev.get('TYPE', '')
             # always check is this is an lvm member
             valid_types = ['part', 'disk', 'mpath']
             if allow_loop_devices():
                 valid_types.append('loop')
-            if device_type in valid_types:
+            if device_type in valid_types and self.disk_api.get('FSTYPE') == 'LVM2_member':
+            # if device_type in valid_types:
                 self._set_lvm_membership()
 
         self.ceph_disk = CephDiskDevice(self)
@@ -447,11 +488,10 @@ class Device(object):
                 device.get('PARTTYPE', '') in ceph_disk_guids.keys()
         # If we come from Devices(), self.lsblk_all is set already.
         # Otherwise, we have to grab the data.
-        details = self.lsblk_all or disk.lsblk_all()
         _is_member = False
         if self.sys_api.get("partitions"):
             for part in self.sys_api.get("partitions").keys():
-                for dev in details:
+                for dev in self.get_lsblk():
                     if part.startswith(dev['NAME']):
                         if is_member(dev):
                             _is_member = True
@@ -722,10 +762,9 @@ class CephDiskDevice(object):
     @property
     def is_member(self) -> bool:
         if self._is_ceph_disk_member is None:
-            if 'ceph' in self.partlabel:
-                self._is_ceph_disk_member = True
-                return True
-            elif self.parttype in ceph_disk_guids.keys():
+            if 'ceph' in self.partlabel or self.parttype in ceph_disk_guids:
+                if 'ceph' in self.partlabel:
+                    self._is_ceph_disk_member = True
                 return True
             return False
         return self._is_ceph_disk_member

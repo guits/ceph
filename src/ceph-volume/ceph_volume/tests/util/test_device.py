@@ -8,6 +8,9 @@ from unittest.mock import patch, mock_open
 
 
 class TestDevice(object):
+    def setup_method(self, method):
+        if device.Device._lsblk_cache is not None:
+            device.Device._lsblk_cache = None
 
     def test_sys_api(self, monkeypatch, device_info):
         volume = api.Volume(lv_name='lv', lv_uuid='y', vg_name='vg',
@@ -74,7 +77,7 @@ class TestDevice(object):
         vg = api.VolumeGroup(pv_name='/dev/nvme0n1', vg_name='foo/bar', vg_free_count=6,
                              vg_extent_size=1073741824)
         monkeypatch.setattr(api, 'get_all_devices_vgs', lambda : [vg])
-        lsblk = {"TYPE": "disk", "NAME": "nvme0n1"}
+        lsblk = {"TYPE": "disk", "NAME": "nvme0n1", "FSTYPE": "LVM2_member"}
         device_info(lsblk=lsblk)
         disk = device.Device("/dev/nvme0n1")
         assert len(disk.vgs) == 1
@@ -90,7 +93,7 @@ class TestDevice(object):
     @patch("ceph_volume.util.disk.has_bluestore_label", lambda x: False)
     def test_loop_device_is_not_device(self, fake_call, device_info):
         data = {"/dev/loop0": {"foo": "bar"}}
-        lsblk = {"TYPE": "loop"}
+        lsblk = {"TYPE": "loop", "NAME": "loop0"}
         device_info(devices=data, lsblk=lsblk)
         disk = device.Device("/dev/loop0")
         assert disk.is_device is False
@@ -98,7 +101,7 @@ class TestDevice(object):
     @patch("ceph_volume.util.disk.has_bluestore_label", lambda x: False)
     def test_loop_device_is_device(self, fake_call, device_info):
         data = {"/dev/loop0": {"foo": "bar"}}
-        lsblk = {"TYPE": "loop"}
+        lsblk = {"TYPE": "loop", "NAME": "loop0"}
         os.environ["CEPH_VOLUME_ALLOW_LOOP_DEVICES"] = "1"
         device_info(devices=data, lsblk=lsblk)
         disk = device.Device("/dev/loop0")
@@ -281,7 +284,7 @@ class TestDevice(object):
         m_os_path_islink.return_value = True
         m_os_path_realpath.return_value = '/dev/sdb'
         data = {"/dev/sdb": {"ro": "0", "size": 5368709120}}
-        lsblk = {"TYPE": "disk"}
+        lsblk = {"TYPE": "disk", "NAME": "sdb"}
         device_info(devices=data,lsblk=lsblk)
         disk = device.Device("/dev/test_symlink")
         print(disk)
@@ -299,7 +302,7 @@ class TestDevice(object):
         m_os_path_islink.return_value = True
         m_os_readlink.return_value = '/dev/dm-0'
         data = {"/dev/mapper/mpatha": {"ro": "0", "size": 5368709120}}
-        lsblk = {"TYPE": "disk"}
+        lsblk = {"TYPE": "disk", "NAME": "mpatha"}
         device_info(devices=data,lsblk=lsblk)
         disk = device.Device("/dev/mapper/mpatha")
         assert disk.available
@@ -375,7 +378,7 @@ class TestDevice(object):
         vg = api.VolumeGroup(pv_name='/dev/nvme0n1', vg_name='foo/bar', vg_free_count=1536,
                              vg_extent_size=4194304)
         monkeypatch.setattr(api, 'get_all_devices_vgs', lambda : [vg])
-        lsblk = {"TYPE": "disk", "NAME": "nvme0n1"}
+        lsblk = {"TYPE": "disk", "NAME": "nvme0n1", "FSTYPE": "LVM2_member"}
         data = {"/dev/nvme0n1": {"size": "6442450944"}}
         lv = {"tags": {"ceph.osd_id": "1"}}
         device_info(devices=data, lsblk=lsblk, lv=lv)
@@ -389,7 +392,7 @@ class TestDevice(object):
         vg = api.VolumeGroup(pv_name='/dev/nvme0n1', vg_name='foo/bar', vg_free_count=4,
                              vg_extent_size=1073741824)
         monkeypatch.setattr(api, 'get_all_devices_vgs', lambda : [vg])
-        lsblk = {"TYPE": "disk", "NAME": "nvme0n1"}
+        lsblk = {"TYPE": "disk", "NAME": "nvme0n1", "FSTYPE": "LVM2_member"}
         data = {"/dev/nvme0n1": {"size": "6442450944"}}
         lv = {"tags": {"ceph.osd_id": "1"}}
         device_info(devices=data, lsblk=lsblk, lv=lv)
@@ -405,7 +408,7 @@ class TestDevice(object):
         vg2 = api.VolumeGroup(pv_name='/dev/nvme0n1', vg_name='foo/bar', vg_free_count=536,
                              vg_extent_size=4194304)
         monkeypatch.setattr(api, 'get_all_devices_vgs', lambda : [vg1, vg2])
-        lsblk = {"TYPE": "disk", "NAME": "nvme0n1"}
+        lsblk = {"TYPE": "disk", "NAME": "nvme0n1", "FSTYPE": "LVM2_member"}
         data = {"/dev/nvme0n1": {"size": "6442450944"}}
         lv = {"tags": {"ceph.osd_id": "1"}}
         device_info(devices=data, lsblk=lsblk, lv=lv)
@@ -475,6 +478,9 @@ class TestDevice(object):
 
 
 class TestDeviceEncryption(object):
+    def setup_method(self, method):
+        if device.Device._lsblk_cache is not None:
+            device.Device._lsblk_cache = None
 
     @patch("ceph_volume.util.disk.has_bluestore_label", lambda x: False)
     def test_partition_is_not_encrypted_lsblk(self, fake_call, device_info):
@@ -654,6 +660,9 @@ class TestDeviceOrdering(object):
 
 
 class TestCephDiskDevice(object):
+    def setup_method(self, method):
+        if device.Device._lsblk_cache is not None:
+            device.Device._lsblk_cache = None
 
     @patch("ceph_volume.util.disk.has_bluestore_label", lambda x: False)
     def test_partlabel_lsblk(self, fake_call, device_info):

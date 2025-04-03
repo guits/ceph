@@ -291,9 +291,7 @@ def disable_kernel_queries(monkeypatch):
     monkeypatch.setattr("ceph_volume.util.disk.udevadm_property", lambda *a, **kw: {})
 
 
-@pytest.fixture(params=[
-    'ceph data', 'ceph journal', 'ceph block',
-    'ceph block.wal', 'ceph block.db', 'ceph lockbox'])
+@pytest.fixture(params=['ceph block', 'ceph block.wal', 'ceph block.db', 'ceph lockbox'])
 def ceph_partlabel(request):
     return request.param
 
@@ -375,7 +373,7 @@ def device_info(monkeypatch, patch_bluestore_label):
         else:
             monkeypatch.setattr("ceph_volume.util.device.lvm.get_device_lvs",
                                 lambda path: [lv])
-        monkeypatch.setattr("ceph_volume.util.device.disk.lsblk", lambda path: lsblk)
+        monkeypatch.setattr("ceph_volume.util.device.disk.lsblk_all", lambda device='', columns=None, abspath=False: [lsblk])
         monkeypatch.setattr("ceph_volume.util.device.disk.blkid", lambda path: blkid)
         monkeypatch.setattr("ceph_volume.util.disk.udevadm_property", lambda *a, **kw: udevadm)
     return apply
