@@ -303,16 +303,17 @@ def ceph_parttype(request):
 
 @pytest.fixture
 def lsblk_ceph_disk_member(monkeypatch, request, ceph_partlabel, ceph_parttype):
-    monkeypatch.setattr("ceph_volume.util.device.disk.lsblk",
-                        lambda path: {'TYPE': 'disk',
-                                      'NAME': 'sda',
-                                      'PARTLABEL': ceph_partlabel,
-                                      'PARTTYPE': ceph_parttype})
-    monkeypatch.setattr("ceph_volume.util.device.disk.lsblk_all",
-                        lambda: [{'TYPE': 'disk',
+    monkeypatch.setattr(
+        "ceph_volume.util.device.Device._cache_fetchers",
+        {
+            '_lsblk_cache': lambda: [{'TYPE': 'disk',
                                   'NAME': 'sda',
                                   'PARTLABEL': ceph_partlabel,
-                                  'PARTTYPE': ceph_parttype}])
+                                  'PARTTYPE': ceph_parttype}],
+            '_lvs_cache': lambda: [],
+            '_all_devices_vgs_cache': lambda: []
+        }
+    )
 
 @pytest.fixture
 def blkid_ceph_disk_member(monkeypatch, request, ceph_partlabel, ceph_parttype):
@@ -355,16 +356,26 @@ def patch_bluestore_label():
 
 @pytest.fixture
 def device_info(monkeypatch, patch_bluestore_label):
-    def apply(devices=None, lsblk=None, lv=None, blkid=None, udevadm=None,
-              has_bluestore_label=False):
+    def apply(
+        devices=None,
+        lsblk=None,
+        lv=None,
+        blkid=None,
+        udevadm=None,
+        has_bluestore_label=False,
+        all_devices_vgs=None,
+    ):
         if devices:
             for dev in devices.keys():
                 devices[dev]['device_nodes'] = [os.path.basename(dev)]
         else:
             devices = {}
         lsblk = lsblk if lsblk else {}
+        lsblk_patch = [lsblk]
         blkid = blkid if blkid else {}
         udevadm = udevadm if udevadm else {}
+        all_devices_vgs = all_devices_vgs if all_devices_vgs else []
+        lvs = [lvm.Volume(**lv)] if lv else []
         lv = Factory(**lv) if lv else None
         monkeypatch.setattr("ceph_volume.sys_info.devices", {})
         monkeypatch.setattr("ceph_volume.util.device.disk.get_devices", lambda device='': devices)
@@ -373,9 +384,17 @@ def device_info(monkeypatch, patch_bluestore_label):
         else:
             monkeypatch.setattr("ceph_volume.util.device.lvm.get_device_lvs",
                                 lambda path: [lv])
-        monkeypatch.setattr("ceph_volume.util.device.disk.lsblk_all", lambda device='', columns=None, abspath=False: [lsblk])
+        monkeypatch.setattr("ceph_volume.util.device.disk.lsblk_all", lambda device='', columns=None, abspath=False: lsblk_patch)
         monkeypatch.setattr("ceph_volume.util.device.disk.blkid", lambda path: blkid)
         monkeypatch.setattr("ceph_volume.util.disk.udevadm_property", lambda *a, **kw: udevadm)
+        monkeypatch.setattr(
+            "ceph_volume.util.device.Device._cache_fetchers",
+            {
+                '_lsblk_cache': lambda: lsblk_patch,
+                '_lvs_cache': lambda: lvs,
+                '_all_devices_vgs_cache': lambda: all_devices_vgs
+            }
+        )
     return apply
 
 @pytest.fixture(params=[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.999, 1.0])

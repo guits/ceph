@@ -1,50 +1,107 @@
 import pytest
 from unittest.mock import patch, Mock, MagicMock, call
+from ceph_volume.util import device, system
 from ceph_volume.objectstore.rawbluestore import RawBlueStore
-from ceph_volume.util import system
 
 
 class TestRawBlueStore:
     @patch('ceph_volume.objectstore.rawbluestore.prepare_utils.create_key', Mock(return_value=['AQCee6ZkzhOrJRAAZWSvNC3KdXOpC2w8ly4AZQ==']))
     def setup_method(self, m_create_key):
+        for cache_attr in device.Device._cache_fetchers.keys():
+            setattr(device.Device, cache_attr, None)
         self.raw_bs = RawBlueStore([])
 
     def test_prepare_dmcrypt(self,
-                             device_info,
                              fake_call,
                              key_size):
+        lsblk = [
+            {
+                'TYPE': 'disk',
+                'NAME': 'foo0',
+                'KNAME': 'foo0'
+            },
+            {
+                'TYPE': 'disk',
+                'NAME': 'foo1',
+                'KNAME': 'foo1'
+            },
+            {
+                'TYPE': 'disk',
+                'NAME': 'foo2',
+                'KNAME': 'foo2'
+            }
+        ]
         self.raw_bs.secrets = {'dmcrypt_key': 'foo'}
         self.raw_bs.block_device_path = '/dev/foo0'
         self.raw_bs.db_device_path = '/dev/foo1'
         self.raw_bs.wal_device_path = '/dev/foo2'
-        lsblk = {"TYPE": "disk",
-                 "NAME": "foo0",
-                 'KNAME': 'foo0'}
-        device_info(lsblk=lsblk)
-        self.raw_bs.prepare_dmcrypt()
-        assert self.raw_bs.block_device_path == "/dev/mapper/ceph--foo0-block-dmcrypt"
-        assert self.raw_bs.db_device_path == "/dev/mapper/ceph--foo0-db-dmcrypt"
-        assert self.raw_bs.wal_device_path == "/dev/mapper/ceph--foo0-wal-dmcrypt"
+        with (
+            patch.object(
+                device.Device,
+                '_cache_fetchers',
+                {
+                    '_lsblk_cache': lambda: lsblk,
+                    '_lvs_cache': lambda: [],
+                    '_all_devices_vgs_cache': lambda: [],
+                }
+            ),
+            patch(
+                'ceph_volume.objectstore.rawbluestore.disk.lsblk',
+                return_value=lsblk[0]
+            )
+        ):
+            self.raw_bs.prepare_dmcrypt()
+            assert self.raw_bs.block_device_path == "/dev/mapper/ceph--foo0-block-dmcrypt"
+            assert self.raw_bs.db_device_path == "/dev/mapper/ceph--foo0-db-dmcrypt"
+            assert self.raw_bs.wal_device_path == "/dev/mapper/ceph--foo0-wal-dmcrypt"
 
     @patch('ceph_volume.objectstore.rawbluestore.RawBlueStore.enroll_tpm2', Mock(return_value=MagicMock()))
     def test_prepare_dmcrypt_with_tpm(self,
-                                      device_info,
                                       fake_call,
                                       key_size):
         self.raw_bs.block_device_path = '/dev/foo0'
         self.raw_bs.db_device_path = '/dev/foo1'
         self.raw_bs.wal_device_path = '/dev/foo2'
         self.raw_bs.with_tpm = 1
-        lsblk = {"TYPE": "disk",
-                 "NAME": "foo0",
-                 'KNAME': 'foo0'}
-        device_info(lsblk=lsblk)
-        self.raw_bs.prepare_dmcrypt()
-        assert 'dmcrypt_key' not in self.raw_bs.secrets.keys()
-        assert self.raw_bs.block_device_path == "/dev/mapper/ceph--foo0-block-dmcrypt"
-        assert self.raw_bs.db_device_path == "/dev/mapper/ceph--foo0-db-dmcrypt"
-        assert self.raw_bs.wal_device_path == "/dev/mapper/ceph--foo0-wal-dmcrypt"
-        assert self.raw_bs.enroll_tpm2.mock_calls == [call('/dev/foo0'), call('/dev/foo1'), call('/dev/foo2')]
+        lsblk = [
+            {
+                'TYPE': 'disk',
+                'NAME': 'foo0',
+                'KNAME': 'foo0'
+            },
+            {
+                'TYPE': 'disk',
+                'NAME': 'foo1',
+                'KNAME': 'foo1'
+            },
+            {
+                'TYPE': 'disk',
+                'NAME': 'foo2',
+                'KNAME': 'foo2'
+            }
+        ]
+        with (
+            patch.object(
+                device.Device,
+                '_cache_fetchers',
+                {
+                    '_lsblk_cache': lambda: lsblk,
+                    '_lvs_cache': lambda: [],
+                    '_all_devices_vgs_cache': lambda: [],
+                }
+            ),
+            patch(
+                'ceph_volume.objectstore.rawbluestore.disk.lsblk',
+                return_value=lsblk[0]
+            )
+        ):
+
+            self.raw_bs.prepare_dmcrypt()
+            assert 'dmcrypt_key' not in self.raw_bs.secrets.keys()
+            assert self.raw_bs.block_device_path == "/dev/mapper/ceph--foo0-block-dmcrypt"
+            assert self.raw_bs.db_device_path == "/dev/mapper/ceph--foo0-db-dmcrypt"
+            assert self.raw_bs.wal_device_path == "/dev/mapper/ceph--foo0-wal-dmcrypt"
+            assert self.raw_bs.enroll_tpm2.mock_calls == [call('/dev/foo0'), call('/dev/foo1'), call('/dev/foo2')]
 
     @patch('ceph_volume.objectstore.rawbluestore.rollback_osd')
     @patch('ceph_volume.objectstore.rawbluestore.RawBlueStore.prepare')

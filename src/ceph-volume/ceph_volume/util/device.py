@@ -7,7 +7,7 @@ from ceph_volume.api import lvm
 from ceph_volume.util import disk, system
 from ceph_volume.util.lsmdisk import LSMDisk
 from ceph_volume.util.constants import ceph_disk_guids
-from typing import Any, Dict, List, Tuple, Optional, Union
+from typing import Any, Callable, Dict, List, Tuple, Optional, Union
 
 
 logger = logging.getLogger(__name__)
@@ -36,17 +36,12 @@ class Devices(object):
                  filter_for_batch: bool = False,
                  with_lsm: bool = False,
                  list_all: bool = False) -> None:
-        lvs = lvm.get_lvs()
-        lsblk = disk.lsblk_all()
-        all_devices_vgs = lvm.get_all_devices_vgs()
         if not sys_info.devices:
             sys_info.devices = disk.get_devices()
-        self._devices = [Device(k,
-                                with_lsm,
-                                lvs=lvs,
-                                lsblk=lsblk,
-                                all_devices_vgs=all_devices_vgs) for k in
-                         sys_info.devices.keys()]
+        self._devices = [
+            Device(k, with_lsm)
+            for k in sys_info.devices.keys()
+        ]
         self.devices = []
         for device in self._devices:
             if filter_for_batch and not device.available_lvm_batch:
@@ -108,17 +103,21 @@ class Device(object):
 
     # define some class variables; mostly to enable the use of autospec in
     # unittests
-    lvs: List[lvm.Volume] = []
+    lvs: Optional[List[lvm.Volume]] = []
 
-    # lsblk cache
+    # cached functions
     _lsblk_cache: Optional[List[Dict[str, str]]] = None
+    _lvs_cache: Optional[List[lvm.Volume]] = None
+    _all_devices_vgs_cache: Optional[List[lvm.VolumeGroup]] = None
+    _cache_fetchers: Dict[str, Callable[[], Any]] = {
+        '_lsblk_cache': disk.lsblk_all,
+        '_lvs_cache': lvm.get_lvs,
+        '_all_devices_vgs_cache': lvm.get_all_devices_vgs
+    }
 
     def __init__(self,
                  path: str,
-                 with_lsm: bool = False,
-                 lvs: Optional[List[lvm.Volume]] = None,
-                 lsblk: Optional[List[Dict[str, str]]] = None,
-                 all_devices_vgs: Optional[List[lvm.VolumeGroup]] = None) -> None:
+                 with_lsm: bool = False) -> None:
         self.path = path
         # LVs can have a vg/lv path, while disks will have /dev/sda
         self.symlink = None
@@ -134,9 +133,6 @@ class Device(object):
         self.sys_api = sys_info.devices.get(self.path, {})
         self.partitions = self._get_partitions()
         self.lv_api: Optional[lvm.Volume] = None
-        self.lvs = [] if not lvs else lvs
-        self.lsblk = lsblk
-        self.all_devices_vgs = all_devices_vgs if all_devices_vgs is not None else []
         self.vgs: List[lvm.VolumeGroup] = []
         self.vg_name = ''
         self.lv_name = ''
@@ -160,41 +156,26 @@ class Device(object):
         self.device_id = self._get_device_id()
 
     @classmethod
-    def _get_lsblk(cls) -> List[Dict[str, str]]:
-        """
-        Retrieves and returns the list of block devices (lsblk) from the system.
-        The result is cached to avoid redundant calls to the `lsblk` command.
+    def _get_cache(cls, cache_attr: str) -> Any:
+        fetch_fn = cls._cache_fetchers.get(cache_attr)
+        if fetch_fn is None:
+            raise ValueError(f"No fetcher function registered for {cache_attr}")
+        if getattr(cls, cache_attr) is None:
+            result = fetch_fn()
+            setattr(cls, cache_attr, result)
+        return getattr(cls, cache_attr)
 
-        If the list is already cached, it returns the cached version. Otherwise, it calls
-        `disk.lsblk_all()` to fetch the block device information from the system and caches it
-        for future use.
+    @classmethod
+    def get_lsblk(cls) -> List[Dict[str, str]]:
+        return cls._get_cache('_lsblk_cache')
 
-        This method is used internally by the class to fetch and cache `lsblk` data.
+    @classmethod
+    def get_lvs(cls) -> List[lvm.Volume]:
+        return cls._get_cache('_lvs_cache')
 
-        Returns:
-            List[Dict[str, str]]: A list of dictionaries, where each dictionary represents
-            a block device with keys like 'NAME', 'TYPE', 'FSTYPE', etc., depending on the
-            output of the `lsblk` command.
-        """
-        if cls._lsblk_cache is None:
-            cls._lsblk_cache = disk.lsblk_all()
-        return cls._lsblk_cache
-
-    def get_lsblk(self) -> List[Dict[str, str]]:
-        """
-        Returns the list of block devices (lsblk) associated with this instance.
-
-        If `self.lsblk_all` is provided (e.g., passed during initialization), it will return that list.
-        Otherwise, it will call the cached version of the block devices using the `_get_lsblk()` method.
-
-        This method gives priority to the `lsblk_all` passed during initialization. If it's not available,
-        it will fall back to the cached result or fetch the data if not cached.
-
-        Returns:
-            List[Dict[str, str]]: A list of dictionaries representing the block devices,
-            with keys like 'NAME', 'TYPE', 'FSTYPE', etc.
-        """
-        return self.lsblk or self._get_lsblk()
+    @classmethod
+    def get_all_devices_vgs(cls) -> List[lvm.VolumeGroup]:
+        return cls._get_cache('_all_devices_vgs_cache')
 
     def fetch_lsm(self, with_lsm: bool) -> Dict[str, Any]:
         '''
@@ -243,37 +224,19 @@ class Device(object):
                 if part:
                     self.sys_api = part
                     break
-
-        if self.lvs:
-            for _lv in self.lvs:
-                # if the path is not absolute, we have 'vg/lv', let's use LV name
-                # to get the LV.
-                if self.path[0] == '/':
-                    if _lv.lv_path == self.path:
-                        lv = _lv
-                        break
-                else:
-                    vgname, lvname = self.path.split('/')
-                    if _lv.lv_name == lvname and _lv.vg_name == vgname:
-                        lv = _lv
-                        break
-        else:
-            filters = {}
+        for _lv in self.get_lvs():
+            # if the path is not absolute, we have 'vg/lv', let's use LV name
+            # to get the LV.
             if self.path[0] == '/':
-                lv_mapper_path: str = self.path
-                field: str = 'lv_path'
-
-                if self.path.startswith('/dev/mapper') or self.path.startswith('/dev/dm-'):
-                    path = os.path.realpath(self.path) if self.path.startswith('/dev/mapper') else self.path
-                    lv_mapper_path = disk.get_lvm_mapper_path_from_dm(path)
-                    field = 'lv_dm_path'
-
-                filters = {field: lv_mapper_path}
+                self.path = disk.UdevData(self.path).slashed_path
+                if _lv.lv_path == self.path:
+                    lv = _lv
+                    break
             else:
                 vgname, lvname = self.path.split('/')
-                filters = {'lv_name': lvname, 'vg_name': vgname}
-            lv = lvm.get_single_lv(filters=filters)
-
+                if _lv.lv_name == lvname and _lv.vg_name == vgname:
+                    lv = _lv
+                    break
         if lv:
             self.lv_api = lv
             self.lvs = [lv]
@@ -283,10 +246,9 @@ class Device(object):
             self.ceph_device_lvm = lvm.is_ceph_device(lv)
         else:
             self.lvs = []
-            for dev in self.get_lsblk():
-                if dev.get('NAME') == os.path.basename(self.path):
-                    break
-            if not dev:
+            import pdb; pdb.set_trace()
+            dev = next((device for device in self.get_lsblk() if device.get('NAME') == os.path.basename(self.path)), None)
+            if dev is None:
                 # In theory, it is impossible to reach this.
                 raise RuntimeError(f'Unexpected error, {self.path} not found.')
             self.disk_api = dev
@@ -330,13 +292,14 @@ class Device(object):
                 attr=format_key(k),
                 value=format_value(v)) for k, v in self.sys_api.items() if k in
                 self.pretty_report_sys_fields])
-        for lv in self.lvs:
-            output.append("""
-    --- Logical Volume ---""")
-            output.extend(
-                [self.pretty_template.format(
-                    attr=format_key(k),
-                    value=format_value(v)) for k, v in lv.report().items()])
+        if self.lvs is not None:
+            for lv in self.lvs:
+                output.append("""
+        --- Logical Volume ---""")
+                output.extend(
+                    [self.pretty_template.format(
+                        attr=format_key(k),
+                        value=format_value(v)) for k, v in lv.report().items()])
         return ''.join(output)
 
     def report(self) -> str:
@@ -352,7 +315,8 @@ class Device(object):
     def json_report(self) -> Dict[str, Any]:
         output = {k.strip('_'): v for k, v in vars(self).items() if k in
                   self.report_fields}
-        output['lvs'] = [lv.report() for lv in self.lvs]
+        if self.lvs is not None:
+            output['lvs'] = [lv.report() for lv in self.lvs]
         return output
 
     def _get_device_id(self) -> str:
@@ -399,17 +363,16 @@ class Device(object):
             # can each host a PV and VG. I think the vg_name property is
             # actually unused (not 100% sure) and can simply be removed
             vgs = None
-            if not self.all_devices_vgs:
-                self.all_devices_vgs = lvm.get_all_devices_vgs()
             for path in device_to_check:
-                for dev_vg in self.all_devices_vgs:
+                for dev_vg in self.get_all_devices_vgs():
                     if dev_vg.pv_name == path:
                         vgs = [dev_vg]
                 if vgs:
                     self.vgs.extend(vgs)
                     self.vg_name = vgs[0].vg_name
                     self._is_lvm_member = True
-                    self.lvs.extend(lvm.get_device_lvs(path))
+                    if self.lvs is not None:
+                        self.lvs.extend(lvm.get_device_lvs(path))
                 if self.lvs:
                     self.ceph_device_lvm = any([True if lv.tags.get('ceph.osd_id') else False for lv in self.lvs])
 
@@ -588,8 +551,8 @@ class Device(object):
     @property
     def used_by_ceph(self) -> bool:
         # only filter out data devices as journals could potentially be reused
-        osd_ids = [lv.tags.get("ceph.osd_id") is not None for lv in self.lvs
-                   if lv.tags.get("ceph.type") in ["data", "block"]]
+        osd_ids = [lv.tags.get("ceph.osd_id") is not None for lv in self.get_lvs()
+                if lv.tags.get("ceph.type") in ["data", "block"]]
         return any(osd_ids)
 
     @property
@@ -597,8 +560,8 @@ class Device(object):
         # similar to used_by_ceph() above. This is for 'journal' devices (db/wal/..)
         # needed by get_lvm_fast_allocs() in devices/lvm/batch.py
         # see https://tracker.ceph.com/issues/59640
-        osd_ids = [lv.tags.get("ceph.osd_id") is not None for lv in self.lvs
-                   if lv.tags.get("ceph.type") in ["db", "wal"]]
+        osd_ids = [lv.tags.get("ceph.osd_id") is not None for lv in self.get_lvs()
+                if lv.tags.get("ceph.type") in ["db", "wal"]]
         return any(osd_ids)
 
     @property

@@ -1,15 +1,18 @@
+# type: ignore
 import pytest
-from unittest.mock import patch, Mock
+from unittest.mock import patch, Mock, PropertyMock
 from ceph_volume import process
 from ceph_volume.api import lvm as api
 from ceph_volume.devices.lvm import migrate
 from ceph_volume.util.device import Device
-from ceph_volume.util import system
-from ceph_volume.util import encryption as encryption_utils
+from ceph_volume.util import disk, encryption as encryption_utils, system
 from ceph_volume.devices.lvm.zap import Zap
 
 
 class TestGetClusterName(object):
+    def setup_method(self):
+        for cache_attr in Device._cache_fetchers.keys():
+            setattr(Device, cache_attr, None)
 
     mock_volumes = []
     def mock_get_lvs(self, *args, **kwargs):
@@ -70,11 +73,28 @@ class TestFindAssociatedDevices(object):
         monkeypatch.setattr(migrate.api, 'get_single_lv', self.mock_get_single_lv)
         monkeypatch.setattr(process, 'call', lambda x, **kw: ('', '', 0))
 
-        result = migrate.find_associated_devices(osd_id='0', osd_fsid='1234')
-        assert len(result) == 1
-        assert result[0][0].path == '/dev/VolGroup/lv1'
-        assert result[0][0].lvs == [vol]
-        assert result[0][1] == 'block'
+        with (
+            patch.object(
+                Device,
+                '_cache_fetchers',
+                {
+                    '_lsblk_cache': [],
+                    '_lvs_cache': lambda: [vol],
+                    '_all_devices_vgs_cache': [],
+                }
+            )
+        ):
+            with (
+                patch('ceph_volume.util.device.disk.UdevData.slashed_path', new_callable=PropertyMock) as m_slashed_path,
+                patch.object(disk.UdevData, '__init__', lambda x, y: None)
+            ):
+                m_slashed_path.return_value = '/dev/VolGroup/lv1'
+                result = migrate.find_associated_devices(osd_id='0', osd_fsid='1234')
+
+                assert len(result) == 1
+                assert result[0][0].path == '/dev/VolGroup/lv1'
+                assert result[0][0].lvs == [vol]
+                assert result[0][1] == 'block'
 
     def test_lv_is_matched_id2(self, monkeypatch):
         tags = 'ceph.osd_id=0,ceph.journal_uuid=x,ceph.type=data,ceph.osd_fsid=1234'

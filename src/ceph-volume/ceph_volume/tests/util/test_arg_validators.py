@@ -1,7 +1,7 @@
 import argparse
 import pytest
 from ceph_volume import exceptions, process
-from ceph_volume.util import arg_validators
+from ceph_volume.util import arg_validators, device
 from unittest.mock import patch, MagicMock
 
 
@@ -78,26 +78,46 @@ class TestExcludeGroupOptions(object):
 class TestValidDevice(object):
 
     def setup_method(self, fake_filesystem):
+        for cache_attr in device.Device._cache_fetchers.keys():
+            setattr(device.Device, cache_attr, None)
         self.validator = arg_validators.ValidDevice()
 
-    @patch('ceph_volume.util.arg_validators.disk.has_bluestore_label', return_value=False)
-    def test_path_is_valid(self, m_has_bs_label,
-                           fake_call, patch_bluestore_label,
-                           device_info, monkeypatch):
+    def test_path_is_valid(self, patch_bluestore_label, monkeypatch):
         monkeypatch.setattr('ceph_volume.util.device.Device.exists', lambda: True)
-        lsblk = {"TYPE": "disk", "NAME": "sda"}
-        device_info(lsblk=lsblk)
-        result = self.validator('/dev/sda')
-        assert result.path == '/dev/sda'
+        with patch.object(
+            device.Device,
+            '_cache_fetchers',
+            {
+                '_lsblk_cache': lambda: [
+                    {
+                        'TYPE': 'disk',
+                        'NAME': 'sda'
+                    },
+                ],
+                '_lvs_cache': lambda: [],
+                '_all_devices_vgs_cache': lambda: [],
+            }
+        ):
+            result = self.validator('/dev/sda')
+            assert result.path == '/dev/sda'
 
-    @patch('ceph_volume.util.arg_validators.disk.has_bluestore_label', return_value=False)
-    def test_path_is_invalid(self, m_has_bs_label,
-                             fake_call, patch_bluestore_label,
-                             device_info):
-        lsblk = {"TYPE": "disk", "NAME": "sda"}
-        device_info(lsblk=lsblk)
-        with pytest.raises(argparse.ArgumentError):
-            self.validator('/device/does/not/exist')
+    def test_path_is_invalid(self):
+        with patch.object(
+            device.Device,
+            '_cache_fetchers',
+            {
+                '_lsblk_cache': lambda: [
+                    {
+                        'TYPE': 'disk',
+                        'NAME': 'sda'
+                    }
+                ],
+                '_lvs_cache': lambda: [],
+                '_all_devices_vgs_cache': lambda: [],
+            }
+        ):
+            with pytest.raises(RuntimeError):
+                self.validator('/device/does/not/exist')
 
     @patch('ceph_volume.util.arg_validators.Device')
     @patch('ceph_volume.util.arg_validators.disk.has_bluestore_label', return_value=False)

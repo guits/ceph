@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 import pytest
-from ceph_volume.util.device import Devices
+from ceph_volume.util.device import Device, Devices
 from ceph_volume.util.lsmdisk import LSMDisk
 from unittest.mock import patch
 import ceph_volume.util.lsmdisk as lsmdisk
@@ -32,7 +32,8 @@ def device_report_keys(device_info):
                      'vendor': 'DELL',
                      'device_id': 'Vendor-Model-Serial',
                      'device_nodes': 'sdb'}
-    }
+    },
+                lsblk={"NAME": "sdb"}
  )
     report = Devices().json_report()[0]
     return list(report.keys())
@@ -61,7 +62,8 @@ def device_sys_api_keys(device_info):
                      'support_discard': '',
                      'vendor': 'DELL',
                      'device_nodes': 'sdb'}
-    }
+    },
+                lsblk={"NAME": "sdb"}
  )
     report = Devices().json_report()[0]
     return list(report['sys_api'].keys())
@@ -93,7 +95,8 @@ def device_data(device_info):
                 'vendor': 'DELL',
                 'device_nodes': 'sdb'
             }
-        }
+        },
+        lsblk={"NAME": "sdb"}
     )
 
     dev = Devices().devices[0]
@@ -116,6 +119,9 @@ def device_data(device_info):
 
 
 class TestInventory(object):
+    def setup_method(self, method):
+        if Device._lsblk_cache is not None:
+            Device._lsblk_cache = None
 
     expected_keys = [
         'ceph_device_lvm',

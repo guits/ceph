@@ -2,12 +2,14 @@ import pytest
 from unittest.mock import patch, Mock, MagicMock, call
 from ceph_volume.objectstore.lvmbluestore import LvmBlueStore
 from ceph_volume.api.lvm import Volume
-from ceph_volume.util import system
+from ceph_volume.util import device, system
 
 
 class TestLvmBlueStore:
     @patch('ceph_volume.objectstore.lvmbluestore.prepare_utils.create_key', Mock(return_value=['AQCee6ZkzhOrJRAAZWSvNC3KdXOpC2w8ly4AZQ==']))
     def setup_method(self, m_create_key):
+        for cache_attr in device.Device._cache_fetchers.keys():
+            setattr(device.Device, cache_attr, None)
         self.lvm_bs = LvmBlueStore([])
 
     @patch('ceph_volume.conf.cluster', 'ceph')
@@ -426,6 +428,21 @@ class TestLvmBlueStore:
         monkeypatch.setattr('ceph_volume.util.system.path_is_mounted', lambda path: False)
         m_create_osd_path.return_value = MagicMock()
         m_success.return_value = MagicMock()
+        lsblk = [
+            {
+                'TYPE': 'disk',
+                'NAME': 'vg_foo-lv_foo--block',
+            },
+            {   'TYPE': 'disk',
+                'NAME': 'fake-block-path'
+            },
+            {   'TYPE': 'disk',
+                'NAME': 'fake-db-path'
+            },
+            {   'TYPE': 'disk',
+                'NAME': 'fake-wal-path'
+            }
+        ]
         lvs = [Volume(lv_name='lv_foo-block',
                       lv_path='/fake-block-path',
                       vg_name='vg_foo',
@@ -441,49 +458,60 @@ class TestLvmBlueStore:
                       vg_name='vg_foo_wal',
                       lv_tags=f'ceph.type=wal,ceph.block_uuid=fake-block-uuid,ceph.wal_uuid=fake-wal-uuid,ceph.db_uuid=fake-db-uuid,ceph.osd_id=0,ceph.osd_fsid=abcd,ceph.cluster_name=ceph,{encrypted},ceph.cephx_lockbox_secret=abcd',
                       lv_uuid='fake-wal-uuid')]
-        self.lvm_bs._activate(lvs)
-        if encrypted == "ceph.encrypted=0":
-            assert fake_run.calls == [{'args': (['ceph-bluestore-tool', '--cluster=ceph',
-                                                 'prime-osd-dir', '--dev', '/fake-block-path',
-                                                 '--path', '/var/lib/ceph/osd/ceph-0', '--no-mon-config'],),
-                                       'kwargs': {}},
-                                      {'args': (['ln', '-snf', '/fake-block-path',
-                                                 '/var/lib/ceph/osd/ceph-0/block'],),
-                                       'kwargs': {}},
-                                      {'args': (['ln', '-snf', '/fake-db-path',
-                                                 '/var/lib/ceph/osd/ceph-0/block.db'],),
-                                       'kwargs': {}},
-                                      {'args': (['ln', '-snf', '/fake-wal-path',
-                                                 '/var/lib/ceph/osd/ceph-0/block.wal'],),
-                                       'kwargs': {}},
-                                      {'args': (['systemctl', 'enable',
-                                                 'ceph-volume@lvm-0-abcd'],),
-                                       'kwargs': {}},
-                                      {'args': (['systemctl', 'enable', '--runtime', 'ceph-osd@0'],),
-                                       'kwargs': {}},
-                                      {'args': (['systemctl', 'start', 'ceph-osd@0'],),
-                                       'kwargs': {}}]
-        else:
-            assert fake_run.calls == [{'args': (['ceph-bluestore-tool', '--cluster=ceph',
-                                                'prime-osd-dir', '--dev', '/dev/mapper/fake-block-uuid',
-                                                '--path', '/var/lib/ceph/osd/ceph-0', '--no-mon-config'],),
-                                      'kwargs': {}},
-                                      {'args': (['ln', '-snf', '/dev/mapper/fake-block-uuid',
-                                                  '/var/lib/ceph/osd/ceph-0/block'],),
-                                      'kwargs': {}},
-                                      {'args': (['ln', '-snf', '/dev/mapper/fake-db-uuid',
-                                                  '/var/lib/ceph/osd/ceph-0/block.db'],),
-                                      'kwargs': {}},
-                                      {'args': (['ln', '-snf', '/dev/mapper/fake-wal-uuid',
-                                                  '/var/lib/ceph/osd/ceph-0/block.wal'],),
-                                      'kwargs': {}},
-                                      {'args': (['systemctl', 'enable', 'ceph-volume@lvm-0-abcd'],),
-                                      'kwargs': {}},
-                                      {'args': (['systemctl', 'enable', '--runtime', 'ceph-osd@0'],),
-                                      'kwargs': {}},
-                                      {'args': (['systemctl', 'start', 'ceph-osd@0'],),
-                                      'kwargs': {}}]
-        assert m_success.mock_calls == [call('ceph-volume lvm activate successful for osd ID: 0')]
+        with (
+            patch.object(
+                device.Device,
+                '_cache_fetchers',
+                {
+                    '_lsblk_cache': lambda: lsblk,
+                    '_lvs_cache': lambda: [],
+                    '_all_devices_vgs_cache': lambda: [],
+                }
+            )
+        ):
+            self.lvm_bs._activate(lvs)
+            if encrypted == "ceph.encrypted=0":
+                assert fake_run.calls == [{'args': (['ceph-bluestore-tool', '--cluster=ceph',
+                                                    'prime-osd-dir', '--dev', '/fake-block-path',
+                                                    '--path', '/var/lib/ceph/osd/ceph-0', '--no-mon-config'],),
+                                        'kwargs': {}},
+                                        {'args': (['ln', '-snf', '/fake-block-path',
+                                                    '/var/lib/ceph/osd/ceph-0/block'],),
+                                        'kwargs': {}},
+                                        {'args': (['ln', '-snf', '/fake-db-path',
+                                                    '/var/lib/ceph/osd/ceph-0/block.db'],),
+                                        'kwargs': {}},
+                                        {'args': (['ln', '-snf', '/fake-wal-path',
+                                                    '/var/lib/ceph/osd/ceph-0/block.wal'],),
+                                        'kwargs': {}},
+                                        {'args': (['systemctl', 'enable',
+                                                    'ceph-volume@lvm-0-abcd'],),
+                                        'kwargs': {}},
+                                        {'args': (['systemctl', 'enable', '--runtime', 'ceph-osd@0'],),
+                                        'kwargs': {}},
+                                        {'args': (['systemctl', 'start', 'ceph-osd@0'],),
+                                        'kwargs': {}}]
+            else:
+                assert fake_run.calls == [{'args': (['ceph-bluestore-tool', '--cluster=ceph',
+                                                    'prime-osd-dir', '--dev', '/dev/mapper/fake-block-uuid',
+                                                    '--path', '/var/lib/ceph/osd/ceph-0', '--no-mon-config'],),
+                                        'kwargs': {}},
+                                        {'args': (['ln', '-snf', '/dev/mapper/fake-block-uuid',
+                                                    '/var/lib/ceph/osd/ceph-0/block'],),
+                                        'kwargs': {}},
+                                        {'args': (['ln', '-snf', '/dev/mapper/fake-db-uuid',
+                                                    '/var/lib/ceph/osd/ceph-0/block.db'],),
+                                        'kwargs': {}},
+                                        {'args': (['ln', '-snf', '/dev/mapper/fake-wal-uuid',
+                                                    '/var/lib/ceph/osd/ceph-0/block.wal'],),
+                                        'kwargs': {}},
+                                        {'args': (['systemctl', 'enable', 'ceph-volume@lvm-0-abcd'],),
+                                        'kwargs': {}},
+                                        {'args': (['systemctl', 'enable', '--runtime', 'ceph-osd@0'],),
+                                        'kwargs': {}},
+                                        {'args': (['systemctl', 'start', 'ceph-osd@0'],),
+                                        'kwargs': {}}]
+            assert m_success.mock_calls == [call('ceph-volume lvm activate successful for osd ID: 0')]
 
     @patch('ceph_volume.systemd.systemctl.osd_is_active', return_value=False)
     def test_activate_all(self,

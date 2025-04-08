@@ -2,12 +2,27 @@
 import os
 import pytest
 from copy import deepcopy
-from unittest.mock import patch, call, Mock
+from unittest.mock import patch, call, Mock, PropertyMock
 from ceph_volume import process
 from ceph_volume.api import lvm as api
 from ceph_volume.devices.lvm import zap
+from ceph_volume.util import device, disk
 from . import data_zap
 from typing import Tuple, List
+
+TEST_RAW_MULTIPLE_DEVICES_DIRECT_REPORT = {
+    'd5a496bc-dcb9-4ad0-a12c-393d3200d2b7': {
+        'osd_uuid': 'd5a496bc-dcb9-4ad0-a12c-393d3200d2b7',
+        'type': 'bluestore',
+        'osd_id': 5,
+        'ceph_fsid': '2d20bc8c-8a0c-11ef-aaba-525400e54507',
+        'device': '/dev/vdx'
+    },
+    'd5a496bc-dcb9-4ad0-a12c-393d3200d2b6': {
+        'osd_uuid': 'd5a496bc-dcb9-4ad0-a12c-393d3200d2b6',
+        'device_wal': '/dev/vdz'
+    }
+}
 
 
 def process_call(command, **kw):
@@ -28,6 +43,10 @@ def process_call(command, **kw):
 
 
 class TestZap:
+    def setup_method(self, method):
+        for cache_attr in device.Device._cache_fetchers.keys():
+            setattr(device.Device, cache_attr, None)
+
     def test_invalid_osd_id_passed(self) -> None:
         with pytest.raises(SystemExit):
             zap.Zap(argv=['--osd-id', 'foo']).main()
@@ -122,10 +141,25 @@ class TestZap:
         volumes = [osd]
         monkeypatch.setattr(zap.api, 'get_lvs', lambda **kw: volumes)
 
-        z = zap.Zap(['--osd-id', '0'])
-        z.main()
-        assert z.args.devices[0].path == '/dev/VolGroup/lv'
-        mock_zap.assert_called_once()
+        monkeypatch.setattr(
+            'ceph_volume.util.device.Device._cache_fetchers',
+            {
+                '_lsblk_cache': lambda: [{'TYPE': 'disk',
+                                          'NAME': '',
+                                          'PARTLABEL': '',
+                                          'PARTTYPE': ''}],
+                '_lvs_cache': lambda: volumes,
+                '_all_devices_vgs_cache': lambda: [],
+            }
+        )
+        with (
+            patch('ceph_volume.util.device.disk.UdevData.slashed_path', new_callable=PropertyMock) as m_slashed_path,
+            patch.object(disk.UdevData, '__init__', lambda x, y: None)):
+            m_slashed_path.return_value = '/dev/VolGroup/lv'
+            z = zap.Zap(['--osd-id', '0'])
+            z.main()
+            assert z.args.devices[0].path == '/dev/VolGroup/lv'
+            mock_zap.assert_called_once()
 
     # @patch('ceph_volume.devices.lvm.zap.disk.has_bluestore_label', Mock(return_value=True))
     @patch('ceph_volume.devices.lvm.zap.Zap.zap')
@@ -135,10 +169,21 @@ class TestZap:
         volumes = []
         monkeypatch.setattr(zap.api, 'get_lvs', lambda **kw: volumes)
 
-        z = zap.Zap(['--osd-id', '0'])
-        z.main()
-        assert z.args.devices[0].path == '/dev/sdb'
-        mock_zap.assert_called_once()
+        with patch.object(
+            zap.Device,
+            '_cache_fetchers',
+            {
+                '_lsblk_cache': lambda: [{'TYPE': 'disk',
+                                          'NAME': 'sdb'}],
+                '_lvs_cache': lambda: volumes,
+                '_all_devices_vgs_cache': lambda: [],
+            }
+        ):
+
+            z = zap.Zap(['--osd-id', '0'])
+            z.main()
+            assert z.args.devices[0].path == '/dev/sdb'
+            mock_zap.assert_called_once()
 
     @patch('ceph_volume.devices.lvm.zap.Zap.zap')
     def test_lv_is_matched_fsid(self, mock_zap, monkeypatch, is_root):
@@ -150,11 +195,27 @@ class TestZap:
         monkeypatch.setattr(zap.api, 'get_lvs', lambda **kw: deepcopy(volumes))
         monkeypatch.setattr(process, 'call', lambda x, **kw: ('', '', 0))
 
-        z = zap.Zap(['--osd-fsid', 'asdf-lkjh'])
-        z.main()
+        with patch.object(
+            zap.Device,
+            '_cache_fetchers',
+            {
+                '_lsblk_cache': lambda: [{'TYPE': 'disk',
+                                          'NAME': 'sdb'}],
+                '_lvs_cache': lambda: volumes,
+                '_all_devices_vgs_cache': lambda: [],
+            }
+        ):
 
-        assert z.args.devices[0].path == '/dev/VolGroup/lv'
-        mock_zap.assert_called_once
+            with (
+                patch('ceph_volume.util.device.disk.UdevData.slashed_path', new_callable=PropertyMock) as m_slashed_path,
+                patch.object(disk.UdevData, '__init__', lambda x, y: None)):
+                m_slashed_path.return_value = '/dev/VolGroup/lv'
+
+                z = zap.Zap(['--osd-fsid', 'asdf-lkjh'])
+                z.main()
+
+                assert z.args.devices[0].path == '/dev/VolGroup/lv'
+                mock_zap.assert_called_once
 
     @patch('ceph_volume.devices.lvm.zap.Zap.zap')
     @patch('ceph_volume.devices.raw.list.List.filter_lvm_osd_devices', Mock(return_value='/dev/sdb'))
@@ -163,53 +224,103 @@ class TestZap:
         volumes = []
         monkeypatch.setattr(zap.api, 'get_lvs', lambda **kw: volumes)
 
-        z = zap.Zap(['--osd-fsid', 'd5a496bc-dcb9-4ad0-a12c-393d3200d2b6'])
-        z.main()
+        with patch.object(
+            zap.Device,
+            '_cache_fetchers',
+            {
+                '_lsblk_cache': lambda: [{'TYPE': 'disk',
+                                          'NAME': 'sdb'}],
+                '_lvs_cache': lambda: volumes,
+                '_all_devices_vgs_cache': lambda: [],
+            }
+        ):
 
-        assert z.args.devices[0].path == '/dev/sdb'
-        mock_zap.assert_called_once
+            z = zap.Zap(['--osd-fsid', 'd5a496bc-dcb9-4ad0-a12c-393d3200d2b6'])
+            z.main()
+
+            assert z.args.devices[0].path == '/dev/sdb'
+            mock_zap.assert_called_once
 
     @patch('ceph_volume.devices.lvm.zap.Zap.zap')
     def test_lv_is_matched_id_fsid(self, mock_zap, monkeypatch, is_root):
         tags = 'ceph.osd_id=0,ceph.osd_fsid=asdf-lkjh,ceph.journal_uuid=x,' +\
-               'ceph.type=data'
+            'ceph.type=data'
         osd = api.Volume(lv_name='volume1', lv_uuid='y', vg_name='',
-                         lv_path='/dev/VolGroup/lv', lv_tags=tags)
+                        lv_path='/dev/VolGroup/lv', lv_tags=tags)
         volumes = []
         volumes.append(osd)
-        monkeypatch.setattr(zap.api, 'get_lvs', lambda **kw: volumes)
-        monkeypatch.setattr(process, 'call', lambda x, **kw: ('', '', 0))
 
-        z = zap.Zap(['--osd-id', '0', '--osd-fsid', 'asdf-lkjh', '--no-systemd'])
-        z.main()
+        with patch.object(
+            zap.Device,
+            '_cache_fetchers',
+            {
+                '_lsblk_cache': lambda: [{'TYPE': 'disk',
+                                          'NAME': 'sdb'}],
+                '_lvs_cache': lambda: volumes,
+                '_all_devices_vgs_cache': lambda: [],
+            }
+        ):
+            monkeypatch.setattr(zap.api, 'get_lvs', lambda **kw: volumes)
+            monkeypatch.setattr(process, 'call', lambda x, **kw: ('', '', 0))
 
-        assert z.args.devices[0].path == '/dev/VolGroup/lv'
-        mock_zap.assert_called_once
+            z = zap.Zap(['--osd-id', '0', '--osd-fsid', 'asdf-lkjh', '--no-systemd'])
+            with (
+                patch('ceph_volume.util.device.disk.UdevData.slashed_path', new_callable=PropertyMock) as m_slashed_path,
+                patch.object(disk.UdevData, '__init__', lambda x, y: None)):
+                m_slashed_path.return_value = '/dev/VolGroup/lv'
+                z.main()
+
+                assert z.args.devices[0].path == '/dev/VolGroup/lv'
+                mock_zap.assert_called_once
 
     @patch('ceph_volume.devices.lvm.zap.Zap.zap')
-    @patch('ceph_volume.devices.raw.list.List.filter_lvm_osd_devices', Mock(return_value='/dev/sdb'))
+    @patch('ceph_volume.devices.raw.list.List.filter_lvm_osd_devices', Mock(return_value='/dev/vdx'))
     @patch('ceph_volume.process.call', Mock(side_effect=process_call))
     def test_raw_is_matched_id_fsid(self, mock_zap, monkeypatch, is_root):
-        volumes = []
-        monkeypatch.setattr(zap.api, 'get_lvs', lambda **kw: volumes)
+        with patch.object(
+            zap.Device,
+            '_cache_fetchers',
+            {
+                '_lsblk_cache': lambda: [{'TYPE': 'disk',
+                                          'NAME': 'sdb'},
+                                         {'TYPE': 'disk',
+                                          'NAME': 'vdx'}],
+                '_lvs_cache': lambda: [],
+                '_all_devices_vgs_cache': lambda: [],
+            }
+        ):
+            volumes = []
+            monkeypatch.setattr(zap.api, 'get_lvs', lambda **kw: volumes)
 
-        z = zap.Zap(['--osd-id', '0', '--osd-fsid', 'd5a496bc-dcb9-4ad0-a12c-393d3200d2b6'])
-        z.main()
+            z = zap.Zap(['--osd-id', '5', '--osd-fsid', 'd5a496bc-dcb9-4ad0-a12c-393d3200d2b7'])
+            z.main()
 
-        assert z.args.devices[0].path == '/dev/sdb'
-        mock_zap.assert_called_once
+            assert z.args.devices[0].path == '/dev/vdx'
+            mock_zap.assert_called_once
 
     @patch('ceph_volume.devices.lvm.zap.Zap.zap')
-    @patch('ceph_volume.devices.raw.list.List.filter_lvm_osd_devices', Mock(side_effect=['/dev/vdx', '/dev/vdy', '/dev/vdz', None]))
-    @patch('ceph_volume.process.call', Mock(side_effect=process_call))
+    @patch('ceph_volume.devices.lvm.zap.api.get_lvs', return_value=[])
+    @patch('ceph_volume.devices.lvm.zap.direct_report', return_value=TEST_RAW_MULTIPLE_DEVICES_DIRECT_REPORT)
     def test_raw_multiple_devices(self, mock_zap, monkeypatch, is_root):
-        volumes = []
-        monkeypatch.setattr(zap.api, 'get_lvs', lambda **kw: volumes)
-        z = zap.Zap(['--osd-id', '5'])
-        z.main()
-
-        set([device.path for device in z.args.devices]) == {'/dev/vdx', '/dev/vdy', '/dev/vdz'}
-        mock_zap.assert_called_once
+        with patch.object(
+            zap.Device,
+            '_cache_fetchers',
+            {
+                '_lsblk_cache': lambda: [{'TYPE': 'disk',
+                                          'NAME': 'vdx',
+                                          'PARTLABEL': '',
+                                          'PARTTYPE': ''}],
+                '_lvs_cache': lambda: [],
+                '_all_devices_vgs_cache': lambda: [],
+            }
+        ):
+            z = zap.Zap(['--osd-id', '5'])
+            with (
+                patch('ceph_volume.util.device.disk.UdevData.slashed_path', new_callable=PropertyMock) as m_slashed_path,
+                patch.object(disk.UdevData, '__init__', lambda x, y: None)):
+                m_slashed_path.return_value = '/dev/vdx'
+                z.main()
+                mock_zap.assert_called_once
 
     @patch('ceph_volume.devices.lvm.zap.direct_report', Mock(return_value={}))
     @patch('ceph_volume.devices.lvm.zap.api.get_lvs', Mock(return_value=[]))
