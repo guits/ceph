@@ -1,0 +1,10 @@
+# Ceph Node Proxy - Python Dependencies
+
+# Web Framework
+CherryPy>=18.0.0
+
+# Configuration
+PyYAML>=5.4.0
+
+# Type hints support (Python < 3.10)
+typing-extensions>=4.0.0; python_version < '3.10'
