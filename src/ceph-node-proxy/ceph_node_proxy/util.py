@@ -12,33 +12,28 @@ from urllib.request import urlopen, Request
 from typing import Dict, Callable, Any, Optional, MutableMapping, Tuple, Union
 
 
-CONFIG: Dict[str, Any] = {
-    'reporter': {
-        'check_interval': 5,
-        'push_data_max_retries': 30,
-        'endpoint': 'https://%(mgr_host):%(mgr_port)/node-proxy/data',
-    },
-    'system': {
-        'refresh_interval': 5
-    },
-    'api': {
-        'port': 9456,
-    },
-    'logging': {
-        'level': logging.INFO,
-    }
-}
-
-
-def get_logger(name: str, level: Union[int, str] = logging.NOTSET) -> logging.Logger:
-    log_level: Union[int, str] = level
-    if log_level == logging.NOTSET:
-        log_level = CONFIG['logging']['level']
+def get_logger(name: str, level: Union[int, str] = logging.NOTSET, 
+               log_format: Optional[str] = None) -> logging.Logger:
+    """Get or create a logger with the specified name and level.
+    
+    Args:
+        name: Logger name (typically __name__)
+        level: Logging level (defaults to INFO)
+        log_format: Optional custom log format string
+        
+    Returns:
+        Configured logger instance
+    """
+    log_level: Union[int, str] = level if level != logging.NOTSET else logging.INFO
     logger = logging.getLogger(name)
     logger.setLevel(log_level)
     handler = logging.StreamHandler()
     handler.setLevel(log_level)
-    fmt = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    
+    if log_format is None:
+        log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    
+    fmt = logging.Formatter(log_format)
     handler.setFormatter(fmt)
     logger.handlers.clear()
     logger.addHandler(handler)
@@ -48,35 +43,6 @@ def get_logger(name: str, level: Union[int, str] = logging.NOTSET) -> logging.Lo
 
 
 logger = get_logger(__name__)
-
-
-class Config:
-    def __init__(self,
-                 config_file: str = '/etc/ceph/node-proxy.yaml',
-                 config: Dict[str, Any] = {}) -> None:
-        self.config_file = config_file
-        self.config = config
-
-        self.load_config()
-
-    def load_config(self) -> None:
-        if os.path.exists(self.config_file):
-            with open(self.config_file, 'r') as f:
-                self.config = yaml.safe_load(f)
-        else:
-            self.config = self.config
-
-        for k, v in self.config.items():
-            if k not in self.config.keys():
-                self.config[k] = v
-
-        for k, v in self.config.items():
-            setattr(self, k, v)
-
-    def reload(self, config_file: str = '') -> None:
-        if config_file != '':
-            self.config_file = config_file
-        self.load_config()
 
 
 class BaseThread(threading.Thread):

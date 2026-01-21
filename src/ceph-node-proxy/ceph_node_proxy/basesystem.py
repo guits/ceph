@@ -1,16 +1,28 @@
 import socket
 from threading import Lock
-from ceph_node_proxy.util import Config, get_logger, BaseThread
+from ceph_node_proxy.util import get_logger, BaseThread
+from ceph_node_proxy.config import ConfigManager
 from typing import Dict, Any
 from ceph_node_proxy.baseclient import BaseClient
 
 
 class BaseSystem(BaseThread):
+    """Base class for system hardware monitoring backends.
+    
+    This class provides the interface for hardware monitoring operations
+    and defines the contract that concrete implementations must follow.
+    """
+
     def __init__(self, **kw: Any) -> None:
+        """Initialize the base system.
+        
+        Args:
+            **kw: Keyword arguments including optional config
+        """
         super().__init__()
         self.lock: Lock = Lock()
         self._system: Dict = {}
-        self.config: Config = kw.get('config', {})
+        self.config: ConfigManager = kw.get('config')
         self.client: BaseClient
         self.log = get_logger(__name__)
 
@@ -81,16 +93,45 @@ class BaseSystem(BaseThread):
         raise NotImplementedError()
 
     def get_host(self) -> str:
+        """Get the hostname of the system.
+        
+        Returns:
+            System hostname
+        """
         return socket.gethostname()
 
+    def request_shutdown(self) -> None:
+        """Request graceful shutdown of the system backend."""
+        self.pending_shutdown = True
+
+    def logout(self) -> None:
+        """Logout from the backend client connection."""
+        if hasattr(self, 'client') and self.client:
+            self.client.logout()
+
     def stop_update_loop(self) -> None:
+        """Stop the update loop."""
         raise NotImplementedError()
 
     def flush(self) -> None:
+        """Flush cached system data."""
         raise NotImplementedError()
 
     def shutdown_host(self, force: bool = False) -> int:
+        """Shutdown the physical host.
+        
+        Args:
+            force: Whether to force shutdown
+            
+        Returns:
+            HTTP status code
+        """
         raise NotImplementedError()
 
     def powercycle(self) -> int:
+        """Power cycle the physical host.
+        
+        Returns:
+            HTTP status code
+        """
         raise NotImplementedError()

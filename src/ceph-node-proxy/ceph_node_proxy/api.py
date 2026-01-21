@@ -2,11 +2,13 @@ import cherrypy  # type: ignore
 from urllib.error import HTTPError
 from cherrypy._cpserver import Server  # type: ignore
 from threading import Thread, Event
-from typing import Dict, Any, List
-from ceph_node_proxy.util import Config, get_logger, write_tmp_file
+from typing import Dict, Any, List, TYPE_CHECKING, Optional
+from ceph_node_proxy.util import get_logger
 from ceph_node_proxy.basesystem import BaseSystem
 from ceph_node_proxy.reporter import Reporter
-from typing import TYPE_CHECKING, Optional
+from ceph_node_proxy.config import ConfigManager
+from ceph_node_proxy.led_handler import LedHandler
+from ceph_node_proxy.api_server import ApiServerConfig, SslManager, ApiServerLifecycle
 
 if TYPE_CHECKING:
     from ceph_node_proxy.main import NodeProxyManager
@@ -52,18 +54,30 @@ class Admin():
 
 
 class API(Server):
+    """Main API class exposing hardware monitoring endpoints."""
+
     def __init__(self,
                  backend: 'BaseSystem',
                  reporter: 'Reporter',
-                 config: 'Config',
+                 config: 'ConfigManager',
                  addr: str = '0.0.0.0',
                  port: int = 0) -> None:
+        """Initialize the API server.
+        
+        Args:
+            backend: System backend for hardware operations
+            reporter: Reporter instance for data reporting
+            config: Configuration manager
+            addr: Address to bind to
+            port: Port to bind to (0 = use config)
+        """
         super().__init__()
         self.log = get_logger(__name__)
         self.backend = backend
         self.reporter = reporter
         self.config = config
-        self.socket_port = self.config.__dict__['api']['port'] if not port else port
+        self.led_handler = LedHandler(backend)
+        self.socket_port = self.config.config.api.port if not port else port
         self.socket_host = addr
         self.subscribe()
 
@@ -158,44 +172,36 @@ class API(Server):
     @cherrypy.tools.json_out()
     @cherrypy.tools.auth_basic(on=True)
     def _led(self, **kw: Any) -> Dict[str, Any]:
+        """Handle LED control requests.
+        
+        Args:
+            **kw: Request parameters (type, id)
+            
+        Returns:
+            LED status or operation result
+            
+        Raises:
+            cherrypy.HTTPError: On validation or operation errors
+        """
         method: str = cherrypy.request.method
         led_type: Optional[str] = kw.get('type')
-        id_drive: Optional[str] = kw.get('id')
-        result: Dict[str, Any] = dict()
-
-        if not led_type:
-            msg = "the led type must be provided (either 'chassis' or 'drive')."
-            self.log.debug(msg)
-            raise cherrypy.HTTPError(400, msg)
-
-        if led_type == 'drive':
-            id_drive_required = not id_drive
-            if id_drive_required or id_drive not in self.backend.get_storage():
-                msg = 'A valid device ID must be provided.'
-                self.log.debug(msg)
-                raise cherrypy.HTTPError(400, msg)
+        drive_id: Optional[str] = kw.get('id')
 
         try:
             if method == 'PATCH':
                 data: Dict[str, Any] = cherrypy.request.json
-
-                if 'state' not in data or data['state'] not in ['on', 'off']:
-                    msg = "Invalid data. 'state' must be provided and have a valid value (on|off)."
-                    self.log.error(msg)
-                    raise cherrypy.HTTPError(400, msg)
-
-                func: Any = (self.backend.device_led_on if led_type == 'drive' and data['state'] == 'on' else
-                             self.backend.device_led_off if led_type == 'drive' and data['state'] == 'off' else
-                             self.backend.chassis_led_on if led_type != 'drive' and data['state'] == 'on' else
-                             self.backend.chassis_led_off if led_type != 'drive' and data['state'] == 'off' else None)
-
+                state = data.get('state')
+                result = self.led_handler.handle_patch_request(led_type, state, drive_id)
             else:
-                func = self.backend.get_device_led if led_type == 'drive' else self.backend.get_chassis_led
+                result = self.led_handler.handle_get_request(led_type, drive_id)
 
-            result = func(id_drive) if led_type == 'drive' else func()
-
+        except ValueError as e:
+            self.log.error(f"LED operation validation error: {e}")
+            raise cherrypy.HTTPError(400, str(e))
         except HTTPError as e:
+            self.log.error(f"LED operation HTTP error: {e}")
             raise cherrypy.HTTPError(e.code, e.reason)
+        
         return result
 
     @cherrypy.expose
@@ -226,60 +232,75 @@ class API(Server):
 
 
 class NodeProxyApi(Thread):
-    def __init__(self, node_proxy_mgr: 'NodeProxyManager') -> None:
+    """Thread managing the Node Proxy REST API server."""
+
+    def __init__(self, system: 'BaseSystem', reporter: 'Reporter', 
+                 config: 'ConfigManager', username: str, password: str,
+                 ssl_crt: str, ssl_key: str) -> None:
+        """Initialize the API server thread.
+        
+        Args:
+            system: System backend instance
+            reporter: Reporter instance
+            config: Configuration manager
+            username: Authentication username
+            password: Authentication password
+            ssl_crt: SSL certificate content
+            ssl_key: SSL key content
+        """
         super().__init__()
         self.log = get_logger(__name__)
         self.cp_shutdown_event = Event()
-        self.node_proxy_mgr = node_proxy_mgr
-        self.username = self.node_proxy_mgr.username
-        self.password = self.node_proxy_mgr.password
-        self.ssl_crt = self.node_proxy_mgr.api_ssl_crt
-        self.ssl_key = self.node_proxy_mgr.api_ssl_key
-        self.system = self.node_proxy_mgr.system
-        self.reporter_agent = self.node_proxy_mgr.reporter_agent
-        self.config = self.node_proxy_mgr.config
+        self.username = username
+        self.password = password
+        self.ssl_crt = ssl_crt
+        self.ssl_key = ssl_key
+        self.system = system
+        self.reporter_agent = reporter
+        self.config = config
         self.api = API(self.system, self.reporter_agent, self.config)
+        
+        # Setup server components
+        self.ssl_manager = SslManager()
+        self.server_config = ApiServerConfig(self.check_auth)
+        self.lifecycle = ApiServerLifecycle(self.api, self.ssl_manager, 
+                                           self.server_config)
 
     def check_auth(self, realm: str, username: str, password: str) -> bool:
-        return self.username == username and \
-            self.password == password
+        """Validate authentication credentials.
+        
+        Args:
+            realm: Authentication realm
+            username: Provided username
+            password: Provided password
+            
+        Returns:
+            True if credentials are valid
+        """
+        return self.username == username and self.password == password
 
     def shutdown(self) -> None:
+        """Initiate graceful shutdown of the API server."""
         self.log.info('Stopping node-proxy API...')
         self.cp_shutdown_event.set()
 
     def run(self) -> None:
-        self.log.info('node-proxy API configuration...')
-        cherrypy.config.update({
-            'environment': 'production',
-            'engine.autoreload.on': False,
-            'log.screen': True,
-        })
-        config = {'/': {
-            'request.methods_with_bodies': ('POST', 'PUT', 'PATCH'),
-            'tools.trailing_slash.on': False,
-            'tools.auth_basic.realm': 'localhost',
-            'tools.auth_basic.checkpassword': self.check_auth
-        }}
-        cherrypy.tree.mount(self.api, '/', config=config)
-        # cherrypy.tree.mount(admin, '/admin', config=config)
-
-        ssl_crt = write_tmp_file(self.ssl_crt,
-                                 prefix_name='listener-crt-')
-        ssl_key = write_tmp_file(self.ssl_key,
-                                 prefix_name='listener-key-')
-
-        self.api.ssl_certificate = ssl_crt.name
-        self.api.ssl_private_key = ssl_key.name
-
-        cherrypy.server.unsubscribe()
+        """Run the API server (Thread main method)."""
+        self.log.info('Starting node-proxy API server...')
+        
         try:
-            cherrypy.engine.start()
-            self.log.info('node-proxy API started.')
+            self.lifecycle.configure()
+            self.lifecycle.mount_application()
+            self.lifecycle.setup_ssl(self.ssl_crt, self.ssl_key)
+            self.lifecycle.start()
+            
+            # Wait for shutdown signal
             self.cp_shutdown_event.wait()
             self.cp_shutdown_event.clear()
-            cherrypy.engine.exit()
-            cherrypy.server.httpserver = None
-            self.log.info('node-proxy API shutdown.')
+            
+            self.lifecycle.stop()
+            self.lifecycle.cleanup()
+            
         except Exception as e:
             self.log.error(f'node-proxy API error: {e}')
+            raise
