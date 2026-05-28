@@ -1107,6 +1107,20 @@ def ceph_osds(ctx, config):
     cluster_name = config['cluster']
     fsid = ctx.ceph[cluster_name].fsid
 
+    if config.get('skip_osd_deploy'):
+        log.info('Skipping OSD deployment (skip_osd_deploy=true)')
+        if not hasattr(ctx, 'managers'):
+            ctx.managers = {}
+        ctx.managers[cluster_name] = CephManager(
+            ctx.ceph[cluster_name].bootstrap_remote,
+            ctx=ctx,
+            logger=log.getChild('ceph_manager.' + cluster_name),
+            cluster=cluster_name,
+            cephadm=True,
+        )
+        yield
+        return
+
     try:
         log.info('Deploying OSDs...')
 

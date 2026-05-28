@@ -1,0 +1,7 @@
+os_type: ubuntu
+os_version: "22.04"
+tasks:
+- install:
+    extra_system_packages:
+      deb:
+      - lvm2

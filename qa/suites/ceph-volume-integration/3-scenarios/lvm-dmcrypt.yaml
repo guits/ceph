@@ -1,0 +1,44 @@
+roles:
+- - mon.a
+  - mgr.x
+  - client.0
+openstack:
+- volumes:
+    count: 2
+    size: 10
+overrides:
+  ceph:
+    log-ignorelist:
+      - OSD_DOWN
+      - CEPHADM_FAILED_DAEMON
+      - CEPHADM_AGENT_DOWN
+      - PG_DEGRADED
+    log-only-match:
+      - CEPHADM_
+    conf:
+      osd:
+        osd shutdown pgref assert: true
+  cephadm:
+    skip_osd_deploy: true
+tasks:
+- cephadm:
+    skip_dashboard: true
+- cephadm.apply:
+    specs:
+    - service_type: osd
+      service_id: cv-lvm-dmcrypt
+      placement:
+        host_pattern: '*'
+      spec:
+        data_devices:
+          limit: 1
+        encrypted: true
+        objectstore: bluestore
+- cephadm.wait_for_service:
+    service: osd.cv-lvm-dmcrypt
+    timeout: 900
+- cephadm.shell:
+    mon.a:
+      - ceph orch ps
+      - test "$(ceph osd stat -f json | jq '.num_up_osds')" -ge 1
+      - ceph-volume lvm list
