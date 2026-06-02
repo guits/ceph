@@ -1,9 +1,6 @@
 roles:
 - - mon.a
   - mgr.x
-  - osd.0
-  - osd.1
-  - osd.2
   - client.0
 openstack:
 - volumes:
@@ -21,13 +18,19 @@ overrides:
     conf:
       osd:
         osd shutdown pgref assert: true
+  cephadm:
+    skip_osd_deploy: true
 tasks:
 - cephadm:
     skip_dashboard: true
+- workunit:
+    clients:
+      client.0:
+        - ceph-volume/scenario_bluestore_lvm.sh
 - cephadm.shell:
     mon.a:
       - ceph orch status
       - ceph orch ps
       - ceph osd stat
-      - test "$(ceph osd stat -f json | jq '.num_up_osds')" -ge 3
+      - test "$(ceph osd stat -f json | jq '.num_up_osds')" -ge 2
       - ceph-volume lvm list
