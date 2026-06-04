@@ -61,7 +61,7 @@ ceph_volume_bootstrap() {
     sudo cephadm ceph-volume --fsid "$FSID" -c "$CONFIG" -k "$BOOTSTRAP_KEYRING" -- "$@"
 }
 
-list_scratch_devices() {
+_list_scratch_devs_raw() {
     local dev
     if [[ -f /scratch_devs ]]; then
         while read -r dev; do
@@ -79,6 +79,60 @@ list_scratch_devices() {
             echo "$dev"
         fi
     done
+}
+
+_scratch_lv_to_block() {
+    local dev block
+    dev=$(readlink -f "$1")
+    if ! sudo lvs --noheadings "$dev" >/dev/null 2>&1; then
+        echo "$dev"
+        return 0
+    fi
+    block=$(lsblk -s -dn -o NAME,TYPE "$dev" | awk '$2=="disk"{print "/dev/"$1; exit}')
+    if [[ -z "$block" ]]; then
+        echo "failed to resolve block device for scratch LV ${dev}" >&2
+        return 1
+    fi
+    readlink -f "$block"
+}
+
+_remove_scratch_lvm_layout() {
+    local dev vg
+    declare -A vg_seen=()
+
+    while read -r dev; do
+        [[ -z "$dev" ]] && continue
+        dev=$(readlink -f "$dev")
+        if ! sudo lvs --noheadings "$dev" >/dev/null 2>&1; then
+            continue
+        fi
+        vg=$(sudo lvs --noheadings -o vg_name "$dev" | awk 'NF { print $1; exit }')
+        [[ -n "$vg" && -z "${vg_seen[$vg]+x}" ]] && vg_seen[$vg]=1
+    done < <(_list_scratch_devs_raw)
+
+    for vg in "${!vg_seen[@]}"; do
+        echo "removing teuthology scratch VG ${vg}"
+        sudo vgremove -fy "$vg" || true
+    done
+}
+
+list_scratch_devices() {
+    local -a entries blocks
+    local dev block
+
+    mapfile -t entries < <(_list_scratch_devs_raw)
+    if [[ "$SCRATCH_MODE" != blocks ]]; then
+        printf '%s\n' "${entries[@]}"
+        return 0
+    fi
+
+    for dev in "${entries[@]}"; do
+        [[ -z "$dev" ]] && continue
+        block=$(_scratch_lv_to_block "$dev")
+        blocks+=("$block")
+    done
+    _remove_scratch_lvm_layout
+    printf '%s\n' "${blocks[@]}"
 }
 
 scratch_devices_required() {
@@ -117,13 +171,13 @@ scratch_device_for_osd() {
 
 zap_all_scratch_devices() {
     local dev
-    while read -r dev; do
+    for dev in "${SCRATCH_DEVICES[@]}"; do
         [[ -z "$dev" ]] && continue
         echo "zapping scratch device ${dev}"
         ceph_volume_admin lvm zap "$dev" || true
         sudo wipefs --all "$dev" || true
         sudo dd if=/dev/zero of="$dev" bs=1M count=10 conv=fsync || true
-    done < <(list_scratch_devices)
+    done
 }
 
 scenario_export_bootstrap() {

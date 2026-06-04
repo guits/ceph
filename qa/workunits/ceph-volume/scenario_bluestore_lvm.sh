@@ -2,6 +2,9 @@
 # Zap scratch devices, create Bluestore LVM OSDs, zap/redeploy, verify.
 set -ex
 
+SCRATCH_MODE=blocks
+export SCRATCH_MODE
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "${SCRIPT_DIR}/common.sh"
