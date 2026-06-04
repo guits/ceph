@@ -6,6 +6,7 @@ OSD_PROFILE="${OSD_PROFILE:-plain}"
 OSD_COUNT="${OSD_COUNT:-2}"
 ZAP_REDEPLOY="${ZAP_REDEPLOY:-1}"
 SCRATCH_MODE="${SCRATCH_MODE:-lvs}"
+SCRATCH_ARE_LVS="${SCRATCH_ARE_LVS:-0}"
 
 wait_for_osds_up() {
     local min="${1:-1}"
@@ -61,8 +62,116 @@ ceph_volume_bootstrap() {
     sudo cephadm ceph-volume --fsid "$FSID" -c "$CONFIG" -k "$BOOTSTRAP_KEYRING" -- "$@"
 }
 
+device_is_system_disk() {
+    lsblk -rn -o MOUNTPOINT "$1" 2>/dev/null | grep -qE '^/(|boot|boot/efi)$'
+}
+
+lv_block_device() {
+    local lv="$1" dev
+    dev=$(sudo lvs --noheadings -o devices "$lv" 2>/dev/null | awk '{print $1}' | sed 's/(.*//')
+    [[ -z "$dev" ]] && return 1
+    if [[ "$dev" == /dev/dm-* ]]; then
+        dev=$(readlink -f "$dev")
+    fi
+    echo "$dev"
+}
+
+vg_nvme_in_use() {
+    findmnt -rn -o SOURCE 2>/dev/null | grep -qE 'vg_nvme|/dev/mapper/vg_nvme'
+}
+
+scratch_devices_required() {
+    if [[ "$OSD_PROFILE" == db-wal ]]; then
+        echo $((OSD_COUNT * 3))
+    else
+        echo "$OSD_COUNT"
+    fi
+}
+
+device_already_collected() {
+    local candidate="$1" existing resolved
+    shift
+    resolved=$(readlink -f "$candidate" 2>/dev/null || echo "$candidate")
+    for existing in "$@"; do
+        [[ "$(readlink -f "$existing" 2>/dev/null || echo "$existing")" == "$resolved" ]] && return 0
+    done
+    return 1
+}
+
+collect_unique_scratch_lv() {
+    local lv="$1" pv
+    local -n _lvs=$2
+    local -n _pvs=$3
+    local need="$4"
+
+    pv=$(lv_block_device "$lv") || return 1
+    pv=$(readlink -f "$pv" 2>/dev/null || echo "$pv")
+    device_is_system_disk "$pv" && return 1
+    device_already_collected "$pv" "${_pvs[@]}" && return 1
+    _lvs+=("$lv")
+    _pvs+=("$pv")
+    [[ ${#_lvs[@]} -ge "$need" ]]
+}
+
+collect_unique_block_device() {
+    local dev="$1"
+    local -n _devices=$2
+    local need="$3"
+
+    dev=$(readlink -f "$dev" 2>/dev/null || echo "$dev")
+    device_is_system_disk "$dev" && return 1
+    device_already_collected "$dev" "${_devices[@]}" && return 1
+    _devices+=("$dev")
+    [[ ${#_devices[@]} -ge "$need" ]]
+}
+
+teardown_vg_nvme() {
+    if ! sudo vgs vg_nvme >/dev/null 2>&1; then
+        return 0
+    fi
+    sudo lvchange -an vg_nvme 2>/dev/null || true
+    sudo vgchange -an vg_nvme 2>/dev/null || true
+    sudo vgremove -fy vg_nvme 2>/dev/null || true
+    if command -v udevadm >/dev/null 2>&1; then
+        sudo udevadm settle 2>/dev/null || true
+    fi
+}
+
+zap_block_device() {
+    local dev="$1" part lv
+    dev=$(readlink -f "$dev")
+
+    while IFS= read -r lv; do
+        [[ -z "$lv" ]] && continue
+        sudo lvchange -an "$lv" 2>/dev/null || true
+    done < <(sudo lvs --noheadings -o lv_path --select "pv_name=${dev}" 2>/dev/null | awk 'NF { print $1 }')
+
+    sudo pvremove -ffy "$dev" 2>/dev/null || true
+
+    while IFS= read -r part; do
+        [[ -z "$part" || "$part" == "$dev" ]] && continue
+        sudo wipefs -af "$part" 2>/dev/null || true
+    done < <(lsblk -pnro NAME "$dev" 2>/dev/null)
+
+    sudo wipefs -af "$dev" 2>/dev/null || true
+    sudo dd if=/dev/zero of="$dev" bs=1M count=10 conv=fsync 2>/dev/null || true
+}
+
+debug_scratch_layout() {
+    echo '=== /scratch_devs ===' >&2
+    cat /scratch_devs >&2
+    echo '=== lsblk ===' >&2
+    lsblk -o NAME,KNAME,TYPE,SIZE,MOUNTPOINT,FSTYPE >&2
+}
+
+zap_scratch_lv() {
+    local lv="$1"
+    ceph_volume_bootstrap lvm zap --destroy "$lv"
+}
+
 list_scratch_devices() {
-    local pv
+    local dev lv pv need
+    local -a devices=() pvs_seen=()
 
     if [[ ! -f /scratch_devs ]]; then
         echo "missing /scratch_devs" >&2
@@ -74,30 +183,81 @@ list_scratch_devices() {
         return
     fi
 
-    mapfile -t pvs < <(sudo pvs --noheadings -o pv_name -S "vg_name=vg_nvme" | awk 'NF { print $1 }')
-    sudo vgremove -fy vg_nvme || true
-    for pv in "${pvs[@]}"; do
-        sudo pvremove -ffy "$pv" || true
-        echo "$pv"
+    need=$(scratch_devices_required)
+
+    # nvme_loop rewrites /scratch_devs with bare /dev/nvme*n* paths.
+    if ! grep -qE '^/dev/[^/]+/[^/]+' /scratch_devs; then
+        while IFS= read -r dev; do
+            [[ -z "$dev" ]] && continue
+            collect_unique_block_device "$dev" devices "$need" && break
+        done < <(grep -E '^/dev/' /scratch_devs)
+        if [[ ${#devices[@]} -eq 0 ]]; then
+            echo "no scratch block devices from /scratch_devs" >&2
+            exit 1
+        fi
+        for dev in "${devices[@]}"; do
+            echo "$dev"
+        done
+        return
+    fi
+
+    # Sepia baremetal: cephadm keeps a vg_nvme LV mounted (e.g. lv_5 on
+    # /var/lib/ceph). Use scratch LVs from /scratch_devs; do not vgremove.
+    if vg_nvme_in_use; then
+        echo "vg_nvme in use (cluster mount); using scratch LVs from /scratch_devs" >&2
+        while IFS= read -r lv; do
+            [[ -z "$lv" ]] && continue
+            collect_unique_scratch_lv "$lv" devices pvs_seen "$need" && break
+        done < <(grep -E '^/dev/[^/]+/[^/]+' /scratch_devs)
+        if [[ ${#devices[@]} -eq 0 ]]; then
+            echo "no scratch LVs from /scratch_devs" >&2
+            exit 1
+        fi
+        for lv in "${devices[@]}"; do
+            echo "$lv"
+        done
+        return
+    fi
+
+    while IFS= read -r pv; do
+        [[ -z "$pv" ]] && continue
+        collect_unique_block_device "$pv" devices "$need" && break
+    done < <(sudo pvs --noheadings -o pv_name -S vg_name=vg_nvme | awk 'NF { print $1 }')
+
+    if [[ ${#devices[@]} -eq 0 ]]; then
+        echo "no scratch block devices from /scratch_devs" >&2
+        exit 1
+    fi
+
+    teardown_vg_nvme
+    for dev in "${devices[@]}"; do
+        echo "$dev"
     done
 }
 
-scratch_devices_required() {
-    if [[ "$OSD_PROFILE" == db-wal ]]; then
-        echo $((OSD_COUNT * 3))
-    else
-        echo "$OSD_COUNT"
-    fi
+scratch_path_is_lv() {
+    [[ "$1" == /dev/*/* ]]
 }
 
 load_scratch_devices() {
     local need
+    if [[ "$SCRATCH_MODE" == blocks ]]; then
+        debug_scratch_layout
+    fi
     mapfile -t SCRATCH_DEVICES < <(list_scratch_devices)
     need=$(scratch_devices_required)
     if [[ "${#SCRATCH_DEVICES[@]}" -lt "$need" ]]; then
-        echo "need at least ${need} scratch device(s) for profile ${OSD_PROFILE}, found ${#SCRATCH_DEVICES[@]}" >&2
+        echo "need at least ${need} unique scratch device(s) for profile ${OSD_PROFILE}, found ${#SCRATCH_DEVICES[@]}" >&2
         printf '%s\n' "${SCRATCH_DEVICES[@]}" >&2 || true
         exit 1
+    fi
+    if scratch_path_is_lv "${SCRATCH_DEVICES[0]}"; then
+        SCRATCH_ARE_LVS=1
+        export SCRATCH_ARE_LVS
+        echo "scratch devices are teuthology LVs; using lvm prepare (not batch --no-auto)" >&2
+    else
+        SCRATCH_ARE_LVS=0
+        export SCRATCH_ARE_LVS
     fi
 }
 
@@ -118,12 +278,19 @@ scratch_device_for_osd() {
 
 zap_all_scratch_devices() {
     local dev
+    if [[ "${SCRATCH_ARE_LVS:-0}" == 1 ]]; then
+        echo "skipping initial scratch zap (teuthology LVs in shared vg_nvme)" >&2
+        return 0
+    fi
     for dev in "${SCRATCH_DEVICES[@]}"; do
-        [[ -z "$dev" ]] && continue
-        echo "zapping scratch device ${dev}"
-        ceph_volume_admin lvm zap "$dev" || true
-        sudo wipefs --all "$dev" || true
-        sudo dd if=/dev/zero of="$dev" bs=1M count=10 conv=fsync || true
+        [[ -z "$dev" || "$dev" != /dev/* ]] && continue
+        if scratch_path_is_lv "$dev"; then
+            echo "zapping scratch lv ${dev}"
+            zap_scratch_lv "$dev"
+        else
+            echo "zapping scratch device ${dev}"
+            zap_block_device "$dev"
+        fi
     done
 }
 
@@ -229,6 +396,47 @@ ensure_precreated_lv() {
     fi
 }
 
+ensure_scratch_lv() {
+    local lv_path="$1"
+    local vg_name lv_name ref_lv ref_size pv
+
+    if sudo lvs "$lv_path" >/dev/null 2>&1; then
+        echo "$lv_path"
+        return 0
+    fi
+
+    vg_name=$(basename "$(dirname "$lv_path")")
+    lv_name=$(basename "$lv_path")
+    ref_lv=""
+    while IFS= read -r candidate; do
+        [[ -z "$candidate" || "$candidate" == "$lv_path" ]] && continue
+        [[ "$(basename "$(dirname "$candidate")")" != "$vg_name" ]] && continue
+        if sudo lvs "$candidate" >/dev/null 2>&1; then
+            ref_lv="$candidate"
+            break
+        fi
+    done < <(grep -E '^/dev/[^/]+/[^/]+' /scratch_devs 2>/dev/null || true)
+
+    if [[ -z "$ref_lv" ]]; then
+        echo "missing scratch LV ${lv_path} and no reference LV in ${vg_name}" >&2
+        return 1
+    fi
+
+    pv=$(lv_block_device "$ref_lv") || return 1
+    ref_size=$(sudo lvs --noheadings -o lv_size --units g --nosuffix "$ref_lv" | awk '{print int($1)}')
+    if [[ -z "$ref_size" || "$ref_size" -le 0 ]]; then
+        echo "failed to read size of reference LV ${ref_lv}" >&2
+        return 1
+    fi
+
+    echo "recreating scratch LV ${lv_path} on ${pv} (${ref_size}G)" >&2
+    sudo lvcreate -y -L "${ref_size}G" -n "$lv_name" "$vg_name" "$pv"
+    if command -v udevadm >/dev/null 2>&1; then
+        sudo udevadm settle 2>/dev/null || true
+    fi
+    echo "$lv_path"
+}
+
 _create_bluestore_lvm_batch_from_devices() {
     local -n _data_devices=$1
     local -n _db_devices=$2
@@ -267,7 +475,27 @@ _create_bluestore_lvm_batch_from_devices() {
     done
 }
 
+create_bluestore_lvm_osds_on_scratch_lvs() {
+    local i data db wal
+
+    for ((i = 0; i < OSD_COUNT; i++)); do
+        data=$(ensure_scratch_lv "$(scratch_device_for_osd "$i" data)")
+        db=""
+        wal=""
+        if [[ "$OSD_PROFILE" == db-wal ]]; then
+            db=$(ensure_scratch_lv "$(scratch_device_for_osd "$i" db)")
+            wal=$(ensure_scratch_lv "$(scratch_device_for_osd "$i" wal)")
+        fi
+        _create_bluestore_lvm_prepare_paths "$data" "$db" "$wal" lvm
+    done
+}
+
 create_bluestore_lvm_osds() {
+    if [[ "${SCRATCH_ARE_LVS:-0}" == 1 ]]; then
+        create_bluestore_lvm_osds_on_scratch_lvs
+        return 0
+    fi
+
     local -a data_devices db_devices wal_devices
     local i
 
@@ -308,14 +536,21 @@ redeploy_lvm_osds_from_records() {
         OSD_PROFILE="$saved_profile"
         return 0
     fi
-    _create_bluestore_lvm_batch_from_devices data_devices db_devices wal_devices
+
+    if [[ "${SCRATCH_ARE_LVS:-0}" == 1 ]] || scratch_path_is_lv "${data_devices[0]}"; then
+        mapfile -t SCRATCH_DEVICES < <(list_scratch_devices)
+        create_bluestore_lvm_osds_on_scratch_lvs
+    else
+        _create_bluestore_lvm_batch_from_devices data_devices db_devices wal_devices
+    fi
     OSD_PROFILE="$saved_profile"
 }
 
-_create_bluestore_lvm_precreated_paths() {
+_create_bluestore_lvm_prepare_paths() {
     local lv="$1"
     local db="${2:-}"
     local wal="${3:-}"
+    local store="${4:-precreated}"
     local data_path map_file
     local -a prepare_args profile_args
     data_path=$(lvm_data_path "$lv")
@@ -336,7 +571,11 @@ _create_bluestore_lvm_precreated_paths() {
     osd_id=$(jq -cr '.. | ."ceph.osd_id"? | select(.)' "$map_file" | head -1)
     osd_fsid=$(jq -cr '.. | ."ceph.osd_fsid"? | select(.)' "$map_file" | head -1)
     deploy_osd_daemon "$osd_id" "$osd_fsid"
-    record_osd_deployment "$osd_id" "$osd_fsid" precreated "$lv" "$db" "$wal"
+    record_osd_deployment "$osd_id" "$osd_fsid" "$store" "$lv" "$db" "$wal"
+}
+
+_create_bluestore_lvm_precreated_paths() {
+    _create_bluestore_lvm_prepare_paths "$1" "$2" "$3" precreated
 }
 
 create_bluestore_lvm_precreated_osd() {
