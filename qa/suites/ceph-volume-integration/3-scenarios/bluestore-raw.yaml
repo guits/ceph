@@ -4,7 +4,7 @@ roles:
   - client.0
 openstack:
 - volumes:
-    count: 2
+    count: 4
     size: 10
 overrides:
   ceph:
@@ -23,24 +23,17 @@ overrides:
 tasks:
 - cephadm:
     skip_dashboard: true
-- cephadm.apply:
-    specs:
-    - service_type: osd
-      service_id: cv-bluestore-raw
-      placement:
-        host_pattern: '*'
-      spec:
-        data_devices:
-          limit: 2
-        method: raw
-        objectstore: bluestore
-- cephadm.wait_for_service:
-    service: osd.cv-bluestore-raw
-    timeout: 900
+- workunit:
+    clients:
+      client.0:
+        - ceph-volume/scenario_bluestore_raw.sh
 - cephadm.shell:
     mon.a:
+      - ceph orch status
       - ceph orch ps
-      - test "$(ceph osd stat -f json | jq '.num_up_osds')" -ge 1
+      - ceph osd stat
+      - test "$(ceph osd stat -f json | jq '.num_up_osds')" -ge 2
+      - ceph-volume raw list
       - |
           if ceph-volume lvm list; then
             echo "expected no LVM OSD metadata for raw deployment"

@@ -111,3 +111,22 @@ create_bluestore_lvm_osd() {
     osd_fsid=$(jq -cr '.. | ."ceph.osd_fsid"? | select(.)' "$map_file" | head -1)
     deploy_osd_daemon "$osd_id" "$osd_fsid"
 }
+
+create_bluestore_raw_osd() {
+    local dev="$1"
+    local map_file="${TMPDIR}/osd.map.$(basename "$dev")"
+
+    ceph_volume_bootstrap raw prepare --bluestore --data "$dev"
+    ceph_volume_bootstrap raw list --format json "$dev" > "$map_file"
+    local osd_id osd_fsid
+    osd_id=$(jq -cr 'to_entries[0].value.osd_id' "$map_file")
+    osd_fsid=$(jq -cr 'to_entries[0].key' "$map_file")
+    deploy_osd_daemon "$osd_id" "$osd_fsid"
+}
+
+assert_no_lvm_osd_metadata() {
+    if ceph_volume lvm list; then
+        echo "expected no LVM OSD metadata for raw deployment" >&2
+        return 1
+    fi
+}
