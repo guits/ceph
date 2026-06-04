@@ -15,9 +15,7 @@ load_scratch_devices
 zap_all_scratch_devices
 ceph orch device ls --refresh
 
-for ((i = 0; i < OSD_COUNT; i++)); do
-    create_bluestore_lvm_osd "$i"
-done
+create_bluestore_lvm_osds
 
 wait_for_osds_up "$OSD_COUNT"
 zap_and_redeploy_osds

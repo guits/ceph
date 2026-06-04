@@ -228,42 +228,87 @@ ensure_precreated_lv() {
     fi
 }
 
-_create_bluestore_lvm_osd_paths() {
-    local data="$1"
-    local db="${2:-}"
-    local wal="${3:-}"
-    local map_file
+_create_bluestore_lvm_batch_from_devices() {
+    local -n _data_devices=$1
+    local -n _db_devices=$2
+    local -n _wal_devices=$3
     local -a batch_args profile_args
-    map_file="${TMPDIR}/osd.map.$(basename "$data")"
-    batch_args=(lvm batch --no-auto "$data" --yes --no-systemd --objectstore bluestore)
+    local i data db wal map_file osd_id osd_fsid
+
+    batch_args=(lvm batch --no-auto "${_data_devices[@]}" --yes --no-systemd --objectstore bluestore)
     # shellcheck disable=SC2206
     profile_args=($(profile_batch_extra_args))
     batch_args+=("${profile_args[@]}")
-    if [[ -n "$db" ]]; then
-        batch_args+=(--db-devices "$db")
+    if [[ ${#_db_devices[@]} -gt 0 ]]; then
+        batch_args+=(--db-devices "${_db_devices[@]}")
     fi
-    if [[ -n "$wal" ]]; then
-        batch_args+=(--wal-devices "$wal")
+    if [[ ${#_wal_devices[@]} -gt 0 ]]; then
+        batch_args+=(--wal-devices "${_wal_devices[@]}")
     fi
     ceph_volume_bootstrap "${batch_args[@]}"
-    ceph_volume_bootstrap lvm list --format json "$data" > "$map_file"
-    local osd_id osd_fsid
-    osd_id=$(jq -cr '.. | ."ceph.osd_id"? | select(.)' "$map_file" | head -1)
-    osd_fsid=$(jq -cr '.. | ."ceph.osd_fsid"? | select(.)' "$map_file" | head -1)
-    deploy_osd_daemon "$osd_id" "$osd_fsid"
-    record_osd_deployment "$osd_id" "$osd_fsid" lvm "$data" "$db" "$wal"
+
+    for ((i = 0; i < ${#_data_devices[@]}; i++)); do
+        data="${_data_devices[$i]}"
+        db=""
+        wal=""
+        if [[ ${#_db_devices[@]} -gt 0 ]]; then
+            db="${_db_devices[$i]}"
+        fi
+        if [[ ${#_wal_devices[@]} -gt 0 ]]; then
+            wal="${_wal_devices[$i]}"
+        fi
+        map_file="${TMPDIR}/osd.map.$(basename "$data")"
+        ceph_volume_bootstrap lvm list --format json "$data" > "$map_file"
+        osd_id=$(jq -cr '.. | ."ceph.osd_id"? | select(.)' "$map_file" | head -1)
+        osd_fsid=$(jq -cr '.. | ."ceph.osd_fsid"? | select(.)' "$map_file" | head -1)
+        deploy_osd_daemon "$osd_id" "$osd_fsid"
+        record_osd_deployment "$osd_id" "$osd_fsid" lvm "$data" "$db" "$wal"
+    done
 }
 
-create_bluestore_lvm_osd() {
-    local data db wal
-    data=$(scratch_device_for_osd "$1" data)
-    db=""
-    wal=""
-    if [[ "$OSD_PROFILE" == db-wal ]]; then
-        db=$(scratch_device_for_osd "$1" db)
-        wal=$(scratch_device_for_osd "$1" wal)
+create_bluestore_lvm_osds() {
+    local -a data_devices db_devices wal_devices
+    local i
+
+    data_devices=()
+    db_devices=()
+    wal_devices=()
+    for ((i = 0; i < OSD_COUNT; i++)); do
+        data_devices+=("$(scratch_device_for_osd "$i" data)")
+        if [[ "$OSD_PROFILE" == db-wal ]]; then
+            db_devices+=("$(scratch_device_for_osd "$i" db)")
+            wal_devices+=("$(scratch_device_for_osd "$i" wal)")
+        fi
+    done
+    _create_bluestore_lvm_batch_from_devices data_devices db_devices wal_devices
+}
+
+redeploy_lvm_osds_from_records() {
+    local rec store data db wal saved_profile
+    local -a data_devices db_devices wal_devices
+
+    saved_profile="$OSD_PROFILE"
+    data_devices=()
+    db_devices=()
+    wal_devices=()
+    while read -r rec; do
+        store=$(echo "$rec" | jq -cr '.store')
+        [[ "$store" == lvm ]] || continue
+        data=$(echo "$rec" | jq -cr '.data')
+        db=$(json_field_or_empty "$(echo "$rec" | jq -cr '.db')")
+        wal=$(json_field_or_empty "$(echo "$rec" | jq -cr '.wal')")
+        OSD_PROFILE=$(echo "$rec" | jq -cr '.profile')
+        data_devices+=("$data")
+        [[ -n "$db" ]] && db_devices+=("$db")
+        [[ -n "$wal" ]] && wal_devices+=("$wal")
+    done < "${TMPDIR}/osds.jsonl.redeploy"
+
+    if [[ ${#data_devices[@]} -eq 0 ]]; then
+        OSD_PROFILE="$saved_profile"
+        return 0
     fi
-    _create_bluestore_lvm_osd_paths "$data" "$db" "$wal"
+    _create_bluestore_lvm_batch_from_devices data_devices db_devices wal_devices
+    OSD_PROFILE="$saved_profile"
 }
 
 _create_bluestore_lvm_precreated_paths() {
@@ -395,7 +440,11 @@ redeploy_recorded_osd() {
     wal=$(json_field_or_empty "$(echo "$rec" | jq -cr '.wal')")
     OSD_PROFILE=$(echo "$rec" | jq -cr '.profile')
     case "$store" in
-        lvm) _create_bluestore_lvm_osd_paths "$data" "$db" "$wal" ;;
+        lvm)
+            echo "redeploy_recorded_osd does not support lvm store; use redeploy_lvm_osds_from_records" >&2
+            OSD_PROFILE="$saved_profile"
+            return 1
+            ;;
         precreated) _create_bluestore_lvm_precreated_paths "$data" "$db" "$wal" ;;
         raw) _create_bluestore_raw_osd_paths "$data" "$db" "$wal" ;;
         *) echo "unknown store in record: ${store}" >&2; OSD_PROFILE="$saved_profile"; return 1 ;;
@@ -424,9 +473,14 @@ zap_and_redeploy_osds() {
     cp "${TMPDIR}/osds.jsonl" "${TMPDIR}/osds.jsonl.redeploy"
     : > "${TMPDIR}/osds.jsonl"
     echo "redeploying OSDs after zap"
-    while read -r rec; do
-        redeploy_recorded_osd "$rec"
-    done < "${TMPDIR}/osds.jsonl.redeploy"
+    stores=$(jq -sr '[.[].store] | unique | join(",")' "${TMPDIR}/osds.jsonl.redeploy")
+    if [[ "$stores" == lvm ]]; then
+        redeploy_lvm_osds_from_records
+    else
+        while read -r rec; do
+            redeploy_recorded_osd "$rec"
+        done < "${TMPDIR}/osds.jsonl.redeploy"
+    fi
 }
 
 assert_no_lvm_osd_metadata() {
