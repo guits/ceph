@@ -4,7 +4,7 @@ roles:
   - client.0
 openstack:
 - volumes:
-    count: 2
+    count: 4
     size: 10
 overrides:
   ceph:
@@ -23,22 +23,17 @@ overrides:
 tasks:
 - cephadm:
     skip_dashboard: true
-- cephadm.apply:
-    specs:
-    - service_type: osd
-      service_id: cv-lvm-dmcrypt
-      placement:
-        host_pattern: '*'
-      spec:
-        data_devices:
-          limit: 1
-        encrypted: true
-        objectstore: bluestore
-- cephadm.wait_for_service:
-    service: osd.cv-lvm-dmcrypt
-    timeout: 900
+- nvme_loop:
+- workunit:
+    env:
+      SCRATCH_MODE: blocks
+    clients:
+      client.0:
+        - ceph-volume/scenario_lvm_precreated.sh
 - cephadm.shell:
     mon.a:
+      - ceph orch status
       - ceph orch ps
-      - test "$(ceph osd stat -f json | jq '.num_up_osds')" -ge 1
+      - ceph osd stat
+      - test "$(ceph osd stat -f json | jq '.num_up_osds')" -ge 2
       - ceph-volume lvm list

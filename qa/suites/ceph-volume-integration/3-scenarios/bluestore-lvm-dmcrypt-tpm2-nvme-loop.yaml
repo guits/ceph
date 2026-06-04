@@ -1,0 +1,41 @@
+# Requires baremetal with a TPM2 chip.
+# Requires baremetal with a TPM2 chip.
+roles:
+- - mon.a
+  - mgr.x
+  - client.0
+openstack:
+- volumes:
+    count: 4
+    size: 10
+overrides:
+  ceph:
+    log-ignorelist:
+      - OSD_DOWN
+      - CEPHADM_FAILED_DAEMON
+      - CEPHADM_AGENT_DOWN
+      - PG_DEGRADED
+    log-only-match:
+      - CEPHADM_
+    conf:
+      osd:
+        osd shutdown pgref assert: true
+  cephadm:
+    skip_osd_deploy: true
+tasks:
+- cephadm:
+    skip_dashboard: true
+- nvme_loop:
+- workunit:
+    env:
+      OSD_PROFILE: dmcrypt-tpm2
+    clients:
+      client.0:
+        - ceph-volume/scenario_bluestore_lvm.sh
+- cephadm.shell:
+    mon.a:
+      - ceph orch status
+      - ceph orch ps
+      - ceph osd stat
+      - test "$(ceph osd stat -f json | jq '.num_up_osds')" -ge 2
+      - ceph-volume lvm list

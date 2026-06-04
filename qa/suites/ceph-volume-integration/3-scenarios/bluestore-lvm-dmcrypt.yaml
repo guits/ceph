@@ -1,11 +1,10 @@
 roles:
 - - mon.a
   - mgr.x
-  - osd.0
   - client.0
 openstack:
 - volumes:
-    count: 2
+    count: 4
     size: 10
 overrides:
   ceph:
@@ -19,10 +18,21 @@ overrides:
     conf:
       osd:
         osd shutdown pgref assert: true
+  cephadm:
+    skip_osd_deploy: true
 tasks:
 - cephadm:
     skip_dashboard: true
 - workunit:
+    env:
+      OSD_PROFILE: dmcrypt
     clients:
       client.0:
-        - ceph-volume/scenario_zap_recreate.sh
+        - ceph-volume/scenario_bluestore_lvm.sh
+- cephadm.shell:
+    mon.a:
+      - ceph orch status
+      - ceph orch ps
+      - ceph osd stat
+      - test "$(ceph osd stat -f json | jq '.num_up_osds')" -ge 2
+      - ceph-volume lvm list
