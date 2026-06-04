@@ -100,6 +100,34 @@ deploy_osd_daemon() {
         sudo cephadm _orch deploy
 }
 
+# ceph-volume resolves LVs by vg/lv; absolute /dev/vg/lv can fail lsblk in the container.
+lvm_data_path() {
+    local lv="$1"
+    if [[ -z "$lv" ]]; then
+        echo "empty LV path for lvm prepare" >&2
+        return 1
+    fi
+    if [[ "$lv" == /dev/*/* ]]; then
+        echo "${lv#/dev/}"
+    else
+        echo "$lv"
+    fi
+}
+
+create_bluestore_lvm_precreated_osd() {
+    local lv="$1"
+    local data_path map_file
+    data_path=$(lvm_data_path "$lv")
+    map_file="${TMPDIR}/osd.map.$(basename "$lv")"
+
+    ceph_volume_bootstrap lvm prepare --bluestore --data "$data_path" --no-systemd
+    ceph_volume_bootstrap lvm list --format json "$data_path" > "$map_file"
+    local osd_id osd_fsid
+    osd_id=$(jq -cr '.. | ."ceph.osd_id"? | select(.)' "$map_file" | head -1)
+    osd_fsid=$(jq -cr '.. | ."ceph.osd_fsid"? | select(.)' "$map_file" | head -1)
+    deploy_osd_daemon "$osd_id" "$osd_fsid"
+}
+
 create_bluestore_lvm_osd() {
     local dev="$1"
     local map_file="${TMPDIR}/osd.map.$(basename "$dev")"

@@ -4,7 +4,7 @@ roles:
   - client.0
 openstack:
 - volumes:
-    count: 1
+    count: 4
     size: 10
 overrides:
   ceph:
@@ -27,3 +27,10 @@ tasks:
     clients:
       client.0:
         - ceph-volume/scenario_lvm_precreated.sh
+- cephadm.shell:
+    mon.a:
+      - ceph orch status
+      - ceph orch ps
+      - ceph osd stat
+      - test "$(ceph osd stat -f json | jq '.num_up_osds')" -ge 2
+      - ceph-volume lvm list
