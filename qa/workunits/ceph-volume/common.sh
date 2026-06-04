@@ -61,78 +61,25 @@ ceph_volume_bootstrap() {
     sudo cephadm ceph-volume --fsid "$FSID" -c "$CONFIG" -k "$BOOTSTRAP_KEYRING" -- "$@"
 }
 
-_list_scratch_devs_raw() {
-    local dev
-    if [[ -f /scratch_devs ]]; then
-        while read -r dev; do
-            [[ -n "$dev" ]] && echo "$dev"
-        done < /scratch_devs
-        return 0
-    fi
-    for dev in /dev/sd? /dev/vd? /dev/nvme?n?; do
-        [[ -e "$dev" ]] || continue
-        case "$dev" in
-            *vda) continue ;;
-        esac
-        if sudo dd if="$dev" of=/dev/null bs=1 count=1 2>/dev/null \
-            && ! mount | grep -qF "$dev"; then
-            echo "$dev"
-        fi
-    done
-}
-
-_scratch_lv_to_block() {
-    local dev block
-    dev=$(readlink -f "$1")
-    if ! sudo lvs --noheadings "$dev" >/dev/null 2>&1; then
-        echo "$dev"
-        return 0
-    fi
-    block=$(lsblk -s -dn -o NAME,TYPE "$dev" | awk '$2=="disk"{print "/dev/"$1; exit}')
-    if [[ -z "$block" ]]; then
-        echo "failed to resolve block device for scratch LV ${dev}" >&2
-        return 1
-    fi
-    readlink -f "$block"
-}
-
-_remove_scratch_lvm_layout() {
-    local dev vg
-    declare -A vg_seen=()
-
-    while read -r dev; do
-        [[ -z "$dev" ]] && continue
-        dev=$(readlink -f "$dev")
-        if ! sudo lvs --noheadings "$dev" >/dev/null 2>&1; then
-            continue
-        fi
-        vg=$(sudo lvs --noheadings -o vg_name "$dev" | awk 'NF { print $1; exit }')
-        [[ -n "$vg" && -z "${vg_seen[$vg]+x}" ]] && vg_seen[$vg]=1
-    done < <(_list_scratch_devs_raw)
-
-    for vg in "${!vg_seen[@]}"; do
-        echo "removing teuthology scratch VG ${vg}"
-        sudo vgremove -fy "$vg" || true
-    done
-}
-
 list_scratch_devices() {
-    local -a entries blocks
-    local dev block
+    local pv
 
-    mapfile -t entries < <(_list_scratch_devs_raw)
-    if [[ "$SCRATCH_MODE" != blocks ]]; then
-        printf '%s\n' "${entries[@]}"
-        return 0
+    if [[ ! -f /scratch_devs ]]; then
+        echo "missing /scratch_devs" >&2
+        exit 1
     fi
 
-    for dev in "${entries[@]}"; do
-        [[ -z "$dev" ]] && continue
-        block=$(_scratch_lv_to_block "$dev")
-        blocks+=("$block")
+    if [[ "$SCRATCH_MODE" != blocks ]]; then
+        cat /scratch_devs
+        return
+    fi
+
+    mapfile -t pvs < <(sudo pvs --noheadings -o pv_name -S "vg_name=vg_nvme" | awk 'NF { print $1 }')
+    sudo vgremove -fy vg_nvme || true
+    for pv in "${pvs[@]}"; do
+        sudo pvremove -ffy "$pv" || true
+        echo "$pv"
     done
-    _remove_scratch_lvm_layout
-    printf '%s\n' "${blocks[@]}"
 }
 
 scratch_devices_required() {
