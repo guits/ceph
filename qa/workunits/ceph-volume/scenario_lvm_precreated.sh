@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Use existing scratch LVs (or blocks with SCRATCH_MODE=blocks), prepare, zap/redeploy.
+# Use scratch devices from /scratch_devs as-is, prepare, zap/redeploy.
 set -ex
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
